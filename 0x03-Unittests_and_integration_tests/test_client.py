@@ -7,7 +7,7 @@ import unittest
 from parameterized import parameterized, parameterized_class
 from unittest.mock import patch, Mock
 from client import GithubOrgClient
-
+from fixtures import TEST_PAYLOAD
 
 class TestGithubOrgClient(unittest.TestCase):
     """Test class for GithubOrgClient"""
@@ -132,10 +132,8 @@ class TestIntegrationGithubOrgClient(unittest.TestCase):
         """Integration test for public_repos without license"""
         # Create client instance
         test_client = GithubOrgClient("google")
-        
         # Call public_repos without license filter
         result = test_client.public_repos()
-        
         # Should return all expected repos from fixtures
         self.assertEqual(result, self.expected_repos)
 
@@ -143,9 +141,7 @@ class TestIntegrationGithubOrgClient(unittest.TestCase):
         """Integration test for public_repos with apache-2.0 license"""
         # Create client instance
         test_client = GithubOrgClient("google")
-        
         # Call public_repos with apache-2.0 license filter
         result = test_client.public_repos(license="apache-2.0")
-        
         # Should return only repos with Apache-2.0 license from fixtures
         self.assertEqual(result, self.apache2_repos)
