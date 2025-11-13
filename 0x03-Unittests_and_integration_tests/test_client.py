@@ -9,6 +9,7 @@ from unittest.mock import patch, Mock
 from client import GithubOrgClient
 from fixtures import TEST_PAYLOAD
 
+
 class TestGithubOrgClient(unittest.TestCase):
     """Test class for GithubOrgClient"""
 
