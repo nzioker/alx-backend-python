@@ -4,7 +4,7 @@ Unit tests for the utils module
 
 This module contains tests for:
 - access_nested_map function
-- get_json function 
+- get_json function
 - memoize decorator
 """
 
@@ -34,7 +34,8 @@ class TestAccessNestedMap(unittest.TestCase):
         ({}, ("a",), KeyError),
         ({"a": 1}, ("a", "b"), KeyError)
     ])
-    def test_access_nested_map_exception(self, nested_map, path, expected_exception):
+    def test_access_nested_map_exception(self, nested_map, path, 
+                                         expected_exception):
         """
         Test that KeyError is raised for invalid paths
         """
@@ -54,7 +55,8 @@ class TestGetJson(unittest.TestCase):
     @patch('utils.requests.get')
     def test_get_json(self, test_url, test_payload, mock_requests_get):
         """
-        Test that get_json returns the expected result without making actual HTTP calls
+        Test that get_json returns the expected result without making 
+        actual HTTP calls
         """
         mock_response = Mock()
         mock_response.json.return_value = test_payload
