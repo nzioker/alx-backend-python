@@ -34,8 +34,8 @@ class TestGithubOrgClient(unittest.TestCase):
         }
         mock_get_json.return_value = expected_org_data
         
-        # Access the org as a PROPERTY (no parentheses) because of @memoize
-        result = test_client.org  # ← No parentheses!
+        # Access the org property (no parentheses due to @memoize decorator)
+        result = test_client.org
         
         # Verify get_json was called once with the correct URL
         expected_url = f"https://api.github.com/orgs/{org_name}"
