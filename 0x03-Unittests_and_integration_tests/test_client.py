@@ -130,12 +130,22 @@ class TestIntegrationGithubOrgClient(unittest.TestCase):
 
     def test_public_repos(self):
         """Integration test for public_repos without license"""
+        # Create client instance
         test_client = GithubOrgClient("google")
+        
+        # Call public_repos without license filter
         result = test_client.public_repos()
+        
+        # Should return all expected repos from fixtures
         self.assertEqual(result, self.expected_repos)
 
     def test_public_repos_with_license(self):
         """Integration test for public_repos with apache-2.0 license"""
+        # Create client instance
         test_client = GithubOrgClient("google")
+        
+        # Call public_repos with apache-2.0 license filter
         result = test_client.public_repos(license="apache-2.0")
+        
+        # Should return only repos with Apache-2.0 license from fixtures
         self.assertEqual(result, self.apache2_repos)
