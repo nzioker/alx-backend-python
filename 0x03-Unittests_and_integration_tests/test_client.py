@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Unit tests for the client module
+Integration tests for the client module
 """
 
 import unittest
-from parameterized import parameterized
-from unittest.mock import patch, PropertyMock
+from parameterized import parameterized, parameterized_class
+from unittest.mock import patch, Mock
 from client import GithubOrgClient
 
 
@@ -82,3 +82,60 @@ class TestGithubOrgClient(unittest.TestCase):
         """Test GithubOrgClient.has_license returns expected result"""
         result = GithubOrgClient.has_license(repo, license_key)
         self.assertEqual(result, expected)
+
+
+@parameterized_class([
+    {
+        'org_payload': TEST_PAYLOAD[0][0],
+        'repos_payload': TEST_PAYLOAD[0][1],
+        'expected_repos': TEST_PAYLOAD[0][2],
+        'apache2_repos': TEST_PAYLOAD[0][3]
+    }
+])
+class TestIntegrationGithubOrgClient(unittest.TestCase):
+    """Integration test class for GithubOrgClient"""
+
+    @classmethod
+    def setUpClass(cls):
+        """Set up class for integration tests"""
+        # Start patcher for requests.get
+        cls.get_patcher = patch('requests.get')
+        cls.mock_get = cls.get_patcher.start()
+
+        # Define side_effect to return different payloads based on URL
+        def side_effect(url):
+            """Return appropriate payload based on URL"""
+            if url == "https://api.github.com/orgs/google":
+                # Return org payload
+                mock_response = Mock()
+                mock_response.json.return_value = cls.org_payload
+                return mock_response
+            elif url == cls.org_payload["repos_url"]:
+                # Return repos payload
+                mock_response = Mock()
+                mock_response.json.return_value = cls.repos_payload
+                return mock_response
+            # Default response
+            mock_response = Mock()
+            mock_response.json.return_value = {}
+            return mock_response
+
+        cls.mock_get.side_effect = side_effect
+
+    @classmethod
+    def tearDownClass(cls):
+        """Tear down class after integration tests"""
+        # Stop the patcher
+        cls.get_patcher.stop()
+
+    def test_public_repos(self):
+        """Integration test for public_repos without license"""
+        test_client = GithubOrgClient("google")
+        result = test_client.public_repos()
+        self.assertEqual(result, self.expected_repos)
+
+    def test_public_repos_with_license(self):
+        """Integration test for public_repos with apache-2.0 license"""
+        test_client = GithubOrgClient("google")
+        result = test_client.public_repos(license="apache-2.0")
+        self.assertEqual(result, self.apache2_repos)
