@@ -67,7 +67,8 @@ class TestGithubOrgClient(unittest.TestCase):
             # Verify the result is the expected repos_url from our payload
             expected_url = "https://api.github.com/orgs/test-org/repos"
             self.assertEqual(result, expected_url)
-        @patch('client.get_json')
+
+    @patch('client.get_json')
     def test_public_repos(self, mock_get_json):
         """
         Test that GithubOrgClient.public_repos returns the expected list of repos
