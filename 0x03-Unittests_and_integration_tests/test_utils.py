@@ -40,26 +40,37 @@ class TestGetJson(unittest.TestCase):
             self.assertEqual(result, test_response)
 
 class TestMemoize(unittest.TestCase):
+    """
+    Test class for memoize decorator
+    """
 
     def test_memoize(self):
-        call_count = 0
-
+        """
+        Test that memoize caches the result and only calls the method once
+        """
         class TestClass:
             def a_method(self):
-                nonlocal call_count
-                call_count += 1
                 return 42
 
             @memoize
             def a_property(self):
                 return self.a_method()
 
+        # Create an instance of TestClass
         test_instance = TestClass()
 
-        result1 = test_instance.a_property()
-        result2 = test_instance.a_property()
+        # Mock the a_method to track calls
+        with patch.object(test_instance, 'a_method') as mock_a_method:
+            # Configure the mock to return 42
+            mock_a_method.return_value = 42
 
-        self.assertEqual(result1, 42)
-        self.assertEqual(result2, 42)
-        
-        self.assertEqual(call_count, 1)
+            # Access a_property twice (as attribute, NOT as method call)
+            result1 = test_instance.a_property  # ← No parentheses!
+            result2 = test_instance.a_property  # ← No parentheses!
+
+            # Verify both accesses return the correct result
+            self.assertEqual(result1, 42)
+            self.assertEqual(result2, 42)
+
+            # Verify a_method was called only once (due to memoization)
+            mock_a_method.assert_called_once()
