@@ -5,6 +5,8 @@ import uuid
 # Create your models here.
 class User(AbstractUser):
     user_id = models.CharField(primary_key=True, default=uuid.uuid4, editable=False)
+    first_name = models.CharField(null=False)
+    last_name = models.CharField(null=False)
     ROLE_CHOICES = [
             ('guest','Guest'),
             ('host', 'Host'),
@@ -24,5 +26,5 @@ class Message(models.model):
 
 class Conversation(models.model):
     conversation_id = models.CharField(primary_key=True)
-    participant_id = models.ForeignKey(User)
+    participants_id = models.ForeignKey(User)
     created_at = models.DateTimeField(auto_now_add=True)
