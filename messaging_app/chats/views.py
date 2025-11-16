@@ -1,12 +1,13 @@
-from rest_framework import viewsets, status
+from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from django_filters.rest_framework import DjangoFilterBackend
 from django.shortcuts import get_object_or_404
 from .models import User, Conversation, Message
 from .serializers import (
     ConversationSerializer, 
-    MessageSerializer, 
+    MessageSerializer,
     ConversationCreateSerializer,
     MessageDetailSerializer
 )
@@ -16,6 +17,10 @@ class ConversationViewSet(viewsets.ModelViewSet):
     ViewSet for listing and creating conversations
     """
     permission_classes = [IsAuthenticated]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter, DjangoFilterBackend]
+    search_fields = ['participants_id__first_name', 'participants_id__last_name']
+    ordering_fields = ['created_at']
+    filterset_fields = ['participants_id']
     
     def get_queryset(self):
         """Return conversations where the current user is the participant"""
@@ -29,7 +34,7 @@ class ConversationViewSet(viewsets.ModelViewSet):
     
     def list(self, request, *args, **kwargs):
         """List all conversations for the current user"""
-        queryset = self.get_queryset()
+        queryset = self.filter_queryset(self.get_queryset())
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
     
@@ -87,6 +92,10 @@ class MessageViewSet(viewsets.ModelViewSet):
     """
     permission_classes = [IsAuthenticated]
     serializer_class = MessageDetailSerializer
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter, DjangoFilterBackend]
+    search_fields = ['message_body', 'sender_id__first_name', 'sender_id__last_name']
+    ordering_fields = ['sent_at', 'sender_id']
+    filterset_fields = ['conversation_id', 'sender_id']
     
     def get_queryset(self):
         """Return messages where the current user is either sender or conversation participant"""
@@ -102,7 +111,7 @@ class MessageViewSet(viewsets.ModelViewSet):
     
     def list(self, request, *args, **kwargs):
         """List all messages for the current user"""
-        queryset = self.get_queryset()
+        queryset = self.filter_queryset(self.get_queryset())
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
     
