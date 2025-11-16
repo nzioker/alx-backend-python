@@ -38,3 +38,26 @@ class MessageSerializer(serializers.ModelSerializer):
             'sent_at'
         ]
         read_only_fields = ['message_id', 'sent_at']
+
+class MessageDetailSerializer(serializers.ModelSerializer):
+    sender_details = UserSerializer(source='sender_id', read_only=True)
+    conversation_details = ConversationSerializer(source='conversation_id', read_only=True)
+    
+    class Meta:
+        model = Message
+        fields = [
+            'message_id',
+            'sender_id',
+            'sender_details',
+            'conversation_id',
+            'conversation_details',
+            'message_body',
+            'sent_at'
+        ]
+        read_only_fields = ['message_id', 'sent_at']
+
+# Add the missing ConversationCreateSerializer
+class ConversationCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Conversation
+        fields = ['participants_id']
