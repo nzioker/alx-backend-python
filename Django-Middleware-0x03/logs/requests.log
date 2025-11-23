@@ -1,0 +1,4 @@
+2025-11-23 15:13:44,329 - User: Anonymous - Path: / - Method: GET
+2025-11-23 15:13:44,557 - User: Anonymous - Path: /favicon.ico - Method: GET
+2025-11-23 15:13:58,939 - User: Anonymous - Path: /test - Method: GET
+2025-11-23 15:13:58,942 - User: Anonymous - Path: /test/ - Method: GET
