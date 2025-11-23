@@ -179,7 +179,7 @@ class RestrictAccessByTimeMiddleware(MiddlewareMixin):
         return HttpResponseForbidden(message)
 
 
-class RateLimitMiddleware(MiddlewareMixin):
+class OffensiveLanguageMiddleware(MiddlewareMixin):
     """
     Middleware that limits the number of chat messages a user can send within a certain time window
     based on their IP address. Limits to 5 messages per minute per IP.
@@ -345,11 +345,3 @@ class RateLimitMiddleware(MiddlewareMixin):
                 "reset_in_seconds": seconds_remaining
             }
 
-
-# Alternative name as mentioned in instructions
-class OffensiveLanguageMiddleware(RateLimitMiddleware):
-    """
-    Alternative name for the rate limiting middleware as mentioned in instructions.
-    This maintains compatibility with the task requirements.
-    """
-    pass
