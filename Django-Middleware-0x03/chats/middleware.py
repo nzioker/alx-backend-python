@@ -346,7 +346,7 @@ class OffensiveLanguageMiddleware(MiddlewareMixin):
             }
 
 
-class RolePermissionMiddleware(MiddlewareMixin):
+class RolepermissionMiddleware(MiddlewareMixin):
     """
     Middleware that checks the user's role before allowing access to specific actions.
     Only allows admin or moderator roles to access protected endpoints.
