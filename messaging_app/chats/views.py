@@ -12,7 +12,7 @@ from .serializers import (
     MessageDetailSerializer
 )
 from .permissions import IsParticipantOfConversation, IsMessageSenderOrParticipant, CanSendMessage
-from .pagination import MessagePagination
+from .pagination import MessagePagination, ConversationPagination
 from .filters import MessageFilter, ConversationFilter
 
 class ConversationViewSet(viewsets.ModelViewSet):
@@ -22,8 +22,9 @@ class ConversationViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsParticipantOfConversation]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter, DjangoFilterBackend]
     search_fields = ['participants_id__first_name', 'participants_id__last_name']
-    ordering_fields = ['created_at']
+    ordering_fields = ['created_at', 'participants_id__first_name']
     filterset_class = ConversationFilter
+    pagination_class = ConversationPagination
     
     def get_queryset(self):
         """Return conversations where the current user is the participant"""
@@ -33,6 +34,20 @@ class ConversationViewSet(viewsets.ModelViewSet):
         if self.action == 'create':
             return ConversationCreateSerializer
         return ConversationSerializer
+    
+    def list(self, request, *args, **kwargs):
+        """
+        List conversations with pagination and filtering
+        """
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+            
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
     
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -46,12 +61,8 @@ class ConversationViewSet(viewsets.ModelViewSet):
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
     
     def update(self, request, *args, **kwargs):
-        """
-        Handle PUT and PATCH methods for conversations with custom permission checks.
-        """
         instance = self.get_object()
         
-        # Check if user has permission to update this conversation
         if not IsParticipantOfConversation().has_object_permission(request, self, instance):
             return Response(
                 {"detail": "You do not have permission to perform this action."},
@@ -61,12 +72,8 @@ class ConversationViewSet(viewsets.ModelViewSet):
         return super().update(request, *args, **kwargs)
     
     def destroy(self, request, *args, **kwargs):
-        """
-        Handle DELETE method for conversations with custom permission checks.
-        """
         instance = self.get_object()
         
-        # Check if user has permission to delete this conversation
         if not IsParticipantOfConversation().has_object_permission(request, self, instance):
             return Response(
                 {"detail": "You do not have permission to perform this action."},
@@ -79,7 +86,6 @@ class ConversationViewSet(viewsets.ModelViewSet):
     def send_message(self, request, pk=None):
         conversation = get_object_or_404(Conversation, pk=pk)
         
-        # Check if user can send messages to this conversation
         if not CanSendMessage().has_object_permission(request, self, conversation):
             return Response(
                 {"detail": "You do not have permission to send messages to this conversation."},
@@ -97,17 +103,36 @@ class ConversationViewSet(viewsets.ModelViewSet):
         
         response_serializer = MessageDetailSerializer(message)
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+    
+    @action(detail=True, methods=['get'])
+    def messages(self, request, pk=None):
+        """
+        Get all messages for a specific conversation with pagination and filtering
+        """
+        conversation = get_object_or_404(Conversation, pk=pk, participants_id=request.user)
+        messages = conversation.messages.all().order_by('sent_at')
+        
+        # Apply filtering to messages
+        message_filter = MessageFilter(request.GET, queryset=messages)
+        filtered_messages = message_filter.qs
+        
+        # Apply pagination
+        paginator = MessagePagination()
+        paginated_messages = paginator.paginate_queryset(filtered_messages, request)
+        
+        serializer = MessageDetailSerializer(paginated_messages, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
 class MessageViewSet(viewsets.ModelViewSet):
     """
-    ViewSet for listing and creating messages
+    ViewSet for listing and creating messages with pagination and filtering
     """
     permission_classes = [IsAuthenticated, IsMessageSenderOrParticipant]
     serializer_class = MessageDetailSerializer
     pagination_class = MessagePagination
     filter_backends = [filters.SearchFilter, filters.OrderingFilter, DjangoFilterBackend]
     search_fields = ['message_body', 'sender_id__first_name', 'sender_id__last_name']
-    ordering_fields = ['sent_at', 'sender_id']
+    ordering_fields = ['sent_at', 'sender_id__first_name']
     filterset_class = MessageFilter
     
     def get_queryset(self):
@@ -119,6 +144,20 @@ class MessageViewSet(viewsets.ModelViewSet):
         if self.action in ['create', 'update', 'partial_update']:
             return MessageSerializer
         return MessageDetailSerializer
+    
+    def list(self, request, *args, **kwargs):
+        """
+        List messages with pagination and filtering
+        """
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+            
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
     
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -140,12 +179,8 @@ class MessageViewSet(viewsets.ModelViewSet):
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
     
     def update(self, request, *args, **kwargs):
-        """
-        Handle PUT and PATCH methods for messages with custom permission checks.
-        """
         instance = self.get_object()
         
-        # Check if user has permission to update this message
         if not IsMessageSenderOrParticipant().has_object_permission(request, self, instance):
             return Response(
                 {"detail": "You can only edit your own messages."},
@@ -155,12 +190,8 @@ class MessageViewSet(viewsets.ModelViewSet):
         return super().update(request, *args, **kwargs)
     
     def partial_update(self, request, *args, **kwargs):
-        """
-        Handle PATCH method specifically for messages.
-        """
         instance = self.get_object()
         
-        # Check if user has permission to update this message
         if not IsMessageSenderOrParticipant().has_object_permission(request, self, instance):
             return Response(
                 {"detail": "You can only edit your own messages."},
@@ -170,12 +201,8 @@ class MessageViewSet(viewsets.ModelViewSet):
         return super().partial_update(request, *args, **kwargs)
     
     def destroy(self, request, *args, **kwargs):
-        """
-        Handle DELETE method for messages with custom permission checks.
-        """
         instance = self.get_object()
         
-        # Check if user has permission to delete this message
         if not IsMessageSenderOrParticipant().has_object_permission(request, self, instance):
             return Response(
                 {"detail": "You can only delete your own messages."},
@@ -186,14 +213,27 @@ class MessageViewSet(viewsets.ModelViewSet):
     
     @action(detail=False, methods=['get'])
     def my_messages(self, request):
-        """Get all messages sent by the current user"""
+        """
+        Get all messages sent by the current user with pagination and filtering
+        """
         messages = Message.objects.filter(sender_id=request.user).order_by('-sent_at')
-        serializer = self.get_serializer(messages, many=True)
-        return Response(serializer.data)
+        
+        # Apply filtering
+        message_filter = MessageFilter(request.GET, queryset=messages)
+        filtered_messages = message_filter.qs
+        
+        # Apply pagination
+        paginator = MessagePagination()
+        paginated_messages = paginator.paginate_queryset(filtered_messages, request)
+        
+        serializer = self.get_serializer(paginated_messages, many=True)
+        return paginator.get_paginated_response(serializer.data)
     
     @action(detail=False, methods=['get'])
     def recent(self, request):
-        """Get recent messages (last 10) for the current user"""
+        """
+        Get recent messages (last 10) for the current user
+        """
         messages = self.get_queryset()[:10]
         serializer = self.get_serializer(messages, many=True)
         return Response(serializer.data)
