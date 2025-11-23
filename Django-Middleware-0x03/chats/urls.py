@@ -1,17 +1,14 @@
-from django.urls import path, include
-from rest_framework.routers import DefaultRouter
-from rest_framework_nested import routers
-from .views import ConversationViewSet, MessageViewSet
+from django.urls import path
+from django.http import HttpResponse
 
+def home_view(request):
+    return HttpResponse("Hello, World! This is a test page for middleware logging.")
 
-router = DefaultRouter()
-router.register(r'conversations', ConversationViewSet, basename='conversation')
-router.register(r'messages', MessageViewSet, basename='message')
-
-conversations_router = routers.NestedDefaultRouter(router, r'conversations', lookup='conversation')
-conversations_router.register(r'messages', MessageViewSet, basename='conversation-messages')
+def admin_view(request):
+    return HttpResponse("Admin area - check logs for request details.")
 
 urlpatterns = [
-    path('', include(router.urls)),
-    path('', include(conversations_router.urls)),
+    path('', home_view, name='home'),
+    path('admin/', admin_view, name='admin'),
+    path('test/', home_view, name='test'),
 ]
