@@ -50,6 +50,18 @@ def rate_limit_info_view(request):
     info = middleware.get_rate_limit_info(ip_address)
     return JsonResponse(info)
 
+def permission_info_view(request):
+    from chats.middleware import RolePermissionMiddleware
+    middleware = RolePermissionMiddleware()
+    permissions_info = middleware.get_user_permissions_info(request)
+    return JsonResponse(permissions_info)
+
+def public_api_view(request):
+    return JsonResponse({
+        'message': 'Public API endpoint - accessible to all authenticated users',
+        'status': 'public'
+    })
+
 urlpatterns = [
     path('', home_view, name='home'),
     path('admin/', admin_view, name='admin'),
@@ -57,4 +69,5 @@ urlpatterns = [
     path('api/conversations/', messaging_view, name='conversations'),
     path('check-access/', check_access_view, name='check_access'),
     path('rate-limit-info/', rate_limit_info_view, name='rate_limit_info'),
+    path('permissions/info/', permission_info_view, name='permission_info'),
 ]

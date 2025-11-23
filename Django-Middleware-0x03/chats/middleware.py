@@ -345,3 +345,186 @@ class OffensiveLanguageMiddleware(MiddlewareMixin):
                 "reset_in_seconds": seconds_remaining
             }
 
+
+class RolePermissionMiddleware(MiddlewareMixin):
+    """
+    Middleware that checks the user's role before allowing access to specific actions.
+    Only allows admin or moderator roles to access protected endpoints.
+    """
+    
+    def __init__(self, get_response=None):
+        """
+        Initialize the middleware with role-based permission settings.
+        """
+        self.get_response = get_response
+        
+        # Define protected endpoints and required roles
+        self.protected_endpoints = {
+            # Admin-only endpoints (only users with 'admin' role)
+            '/api/admin/': ['admin'],
+            '/api/system/': ['admin'],
+            '/api/users/': ['admin'],  # User management
+            '/api/analytics/': ['admin'],
+            '/api/reports/': ['admin'],
+            
+            # Admin and moderator endpoints
+            '/api/moderation/': ['admin', 'moderator'],
+            '/api/content/': ['admin', 'moderator'],
+            '/api/flags/': ['admin', 'moderator'],
+            
+            # Add other protected endpoints as needed
+        }
+        
+        # Allowed roles for protected endpoints
+        self.allowed_roles = ['admin', 'moderator']
+    
+    def __call__(self, request):
+        """
+        Process the request and check user roles for protected endpoints.
+        """
+        # Check if the request path matches any protected endpoints
+        protected_path = self.get_protected_path(request.path)
+        
+        if protected_path:
+            # Get required roles for this endpoint
+            required_roles = self.protected_endpoints[protected_path]
+            
+            # Check if user has the required role
+            if not self.has_required_role(request, required_roles):
+                return self.get_access_denied_response(request, required_roles)
+        
+        # Proceed with the request if access is allowed
+        response = self.get_response(request)
+        return response
+    
+    def get_protected_path(self, request_path):
+        """
+        Check if the request path matches any protected endpoints.
+        Returns the protected path pattern if matched, None otherwise.
+        """
+        for protected_path in self.protected_endpoints:
+            if request_path.startswith(protected_path):
+                return protected_path
+        return None
+    
+    def has_required_role(self, request, required_roles):
+        """
+        Check if the user has one of the required roles.
+        """
+        # Check if user is authenticated
+        if not hasattr(request, 'user') or not request.user.is_authenticated:
+            return False
+        
+        # Get user's role
+        user_role = self.get_user_role(request.user)
+        
+        # Check if user's role is in the required roles
+        return user_role in required_roles
+    
+    def get_user_role(self, user):
+        """
+        Extract the user's role from the user object.
+        This method can be customized based on your User model structure.
+        """
+        try:
+            # If using a custom User model with a 'role' field
+            if hasattr(user, 'role'):
+                return user.role
+            
+            # If using Django's built-in User model with groups
+            elif user.groups.filter(name__in=self.allowed_roles).exists():
+                # Return the first matching group/role
+                return user.groups.filter(name__in=self.allowed_roles).first().name
+            
+            # If using Django's built-in is_staff or is_superuser
+            elif user.is_superuser:
+                return 'admin'
+            elif user.is_staff:
+                return 'moderator'
+            
+            else:
+                return 'user'  # Default role for regular users
+                
+        except Exception as e:
+            # Log error and return default role
+            logging.error(f"Error getting user role: {str(e)}")
+            return 'user'
+    
+    def get_access_denied_response(self, request, required_roles):
+        """
+        Return a 403 Forbidden response when user doesn't have required role.
+        """
+        user_role = self.get_user_role(request.user) if request.user.is_authenticated else 'anonymous'
+        
+        response_data = {
+            "error": "Access Denied",
+            "message": "You do not have permission to access this resource.",
+            "required_roles": required_roles,
+            "your_role": user_role,
+            "path": request.path,
+            "status_code": 403
+        }
+        
+        # HTML response for browser requests
+        if 'text/html' in request.META.get('HTTP_ACCEPT', ''):
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            html_message = f"""
+            <html>
+            <head>
+                <title>Access Denied</title>
+                <style>
+                    body {{ font-family: Arial, sans-serif; text-align: center; padding: 50px; }}
+                    .container {{ max-width: 600px; margin: 0 auto; padding: 30px; border: 1px solid #d9534f; border-radius: 10px; background-color: #f8d7da; }}
+                    h1 {{ color: #d9534f; }}
+                    .info {{ background: white; padding: 15px; border-radius: 5px; margin: 15px 0; text-align: left; }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1>🚫 Access Denied</h1>
+                    <p>You do not have permission to access this resource.</p>
+                    
+                    <div class="info">
+                        <p><strong>Required Roles:</strong> {', '.join(required_roles)}</p>
+                        <p><strong>Your Role:</strong> {user_role}</p>
+                        <p><strong>Path:</strong> {request.path}</p>
+                        <p><strong>Time:</strong> {current_time}</p>
+                    </div>
+                    
+                    <p>Please contact an administrator if you believe this is an error.</p>
+                </div>
+            </body>
+            </html>
+            """
+            return HttpResponseForbidden(html_message)
+        
+        # JSON response for API requests
+        return JsonResponse(response_data, status=403)
+    
+    def get_user_permissions_info(self, request):
+        """
+        Utility method to get current user's permissions information (for debugging).
+        """
+        if not request.user.is_authenticated:
+            return {
+                "authenticated": False,
+                "role": "anonymous",
+                "allowed_roles": self.allowed_roles,
+                "protected_endpoints": list(self.protected_endpoints.keys())
+            }
+        
+        user_role = self.get_user_role(request.user)
+        user_permissions = {}
+        
+        for endpoint, roles in self.protected_endpoints.items():
+            user_permissions[endpoint] = user_role in roles
+        
+        return {
+            "authenticated": True,
+            "user_id": request.user.id,
+            "username": request.user.username,
+            "email": getattr(request.user, 'email', ''),
+            "role": user_role,
+            "permissions": user_permissions,
+            "allowed_roles": self.allowed_roles
+        }
