@@ -43,10 +43,18 @@ def check_access_view(request):
         'message': 'Access restricted' if is_restricted else 'Access allowed'
     })
 
+def rate_limit_info_view(request):
+    from chats.middleware import RateLimitMiddleware
+    middleware = RateLimitMiddleware()
+    ip_address = middleware.get_client_ip(request)
+    info = middleware.get_rate_limit_info(ip_address)
+    return JsonResponse(info)
+
 urlpatterns = [
     path('', home_view, name='home'),
     path('admin/', admin_view, name='admin'),
     path('api/messages/', messaging_view, name='messaging'),
     path('api/conversations/', messaging_view, name='conversations'),
     path('check-access/', check_access_view, name='check_access'),
+    path('rate-limit-info/', rate_limit_info_view, name='rate_limit_info'),
 ]
