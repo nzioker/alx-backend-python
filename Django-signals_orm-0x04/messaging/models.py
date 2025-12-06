@@ -25,3 +25,11 @@ class Notification(models.Model):
     
     def __str__(self):
         return f"Notification for {self.user} about message {self.message.id}"
+    
+class MessageHistory(models.Model):
+    message = models.ForeignKey(Message, on_delete=models.CASCADE, related_name='history')
+    old_content = models.TextField()
+    changed_at = models.DateTimeField(default=timezone.now)
+    
+    def __str__(self):
+        return f"History for message {self.message.id}"
