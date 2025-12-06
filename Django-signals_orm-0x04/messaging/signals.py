@@ -29,7 +29,16 @@ def log_message_edit(sender, instance, **kwargs):
 
 @receiver(post_delete, sender=User)
 def cleanup_user_data(sender, instance, **kwargs):
-    """Clean up related data when a user is deleted"""
-    # Django's CASCADE will handle foreign key deletions automatically
-    # This signal can be used for additional cleanup if needed
-    pass
+    """Clean up related data when a user is deleted using Django's ORM"""
+    Message.objects.filter(sender=instance).delete()
+    Message.objects.filter(receiver=instance).delete()
+    
+    Notification.objects.filter(user=instance).delete()
+    
+    MessageHistory.objects.filter(changed_by=instance).delete()
+    
+    user_messages = Message.objects.filter(sender=instance)
+    
+    Notification.objects.filter(message__in=user_messages).delete()
+    
+    Message.objects.filter(edited_by=instance).update(edited_by=None)
