@@ -14,6 +14,11 @@ from .serializers import (
 from .permissions import IsParticipantOfConversation, IsMessageSenderOrParticipant, CanSendMessage
 from .pagination import MessagePagination, ConversationPagination
 from .filters import MessageFilter, ConversationFilter
+from django.views.decorators.cache import cache_page
+from django.utils.decorators import method_decorator
+from django.views.generic import ListView
+from messaging.models import Message
+
 
 class ConversationViewSet(viewsets.ModelViewSet):
     """
@@ -237,3 +242,16 @@ class MessageViewSet(viewsets.ModelViewSet):
         messages = self.get_queryset()[:10]
         serializer = self.get_serializer(messages, many=True)
         return Response(serializer.data)
+    
+
+@method_decorator(cache_page(60), name='dispatch')
+class ConversationListView(ListView):
+    """Cached view for displaying conversation list"""
+    model = Message
+    template_name = 'messaging/conversation_list.html'
+    context_object_name = 'messages'
+    
+    def get_queryset(self):
+        return Message.objects.filter(
+            receiver=self.request.user
+        ).select_related('sender').order_by('-timestamp')
