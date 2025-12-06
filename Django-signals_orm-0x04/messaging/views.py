@@ -252,3 +252,16 @@ def reply_to_message(request, message_id):
             })
     
     return render(request, 'messaging/reply_form.html', {'message_id': message_id})
+
+
+def unread_messages_view(request):
+    """Display unread messages for the current user"""
+    # Using custom manager with only() to select specific fields
+    unread_messages = Message.unread_messages.for_user(request.user).only(
+        'sender__username', 'content', 'timestamp'
+    )
+    
+    context = {
+        'unread_messages': unread_messages,
+    }
+    return render(request, 'messaging/unread_messages.html', context)
