@@ -26,3 +26,10 @@ def log_message_edit(sender, instance, **kwargs):
                 instance.edited = True
         except Message.DoesNotExist:
             pass
+
+@receiver(post_delete, sender=User)
+def cleanup_user_data(sender, instance, **kwargs):
+    """Clean up related data when a user is deleted"""
+    # Django's CASCADE will handle foreign key deletions automatically
+    # This signal can be used for additional cleanup if needed
+    pass
