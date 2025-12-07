@@ -1,5 +1,5 @@
 # Use Python 3.10 as base image
-FROM python:3.10-alpine
+FROM python:3.10-slim
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -9,10 +9,12 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 # Install system dependencies
-RUN apk update \
-    && apk add --virtual build-deps gcc python3-dev musl-dev \
-    && apk add --no-cache mariadb-connector-c-dev \
-    && apk add jpeg-dev zlib-dev libjpeg
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        gcc \
+        default-libmysqlclient-dev \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
 COPY requirements.txt .
@@ -22,8 +24,8 @@ RUN pip install --upgrade pip \
 # Copy project code
 COPY . .
 
-# Expose port 8000
+# Expose port 8000 (default Django port)
 EXPOSE 8000
 
-# Run the application
+# Run Django development server on port 8000
 CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
