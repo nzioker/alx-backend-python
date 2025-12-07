@@ -5,13 +5,12 @@ services:
     image: mysql:8.0
     container_name: messaging_db
     restart: always
-    env_file:
-      - .env
     environment:
       MYSQL_DATABASE: ${MYSQL_DATABASE}
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DB: ${MYSQL_DATABASE}  
     ports:
       - "3306:3306"
     networks:
@@ -23,8 +22,6 @@ services:
     restart: always
     depends_on:
       - db
-    env_file:
-      - .env
     environment:
       DJANGO_SETTINGS_MODULE: messaging_app.settings
       MYSQL_HOST: db
@@ -34,8 +31,8 @@ services:
     networks:
       - messaging_network
     command: >
-      sh -c "python manage.py migrate &&
-             python manage.py runserver 0.0.0.0:8000"
+      sh -c "python3 manage.py migrate &&
+             python3 manage.py runserver 0.0.0.0:8000"
 
 networks:
   messaging_network:
