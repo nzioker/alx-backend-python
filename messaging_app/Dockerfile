@@ -1,5 +1,5 @@
 # Use Python 3.10 as base image
-FROM python:3.10-slim
+FROM python:3.10-alpine
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -9,12 +9,10 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 # Install system dependencies
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        gcc \
-        default-libmysqlclient-dev \
-        pkg-config \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk update \
+    && apk add --virtual build-deps gcc python3-dev musl-dev \
+    && apk add --no-cache mariadb-connector-c-dev \
+    && apk add jpeg-dev zlib-dev libjpeg
 
 # Install Python dependencies
 COPY requirements.txt .
@@ -24,7 +22,7 @@ RUN pip install --upgrade pip \
 # Copy project code
 COPY . .
 
-# Expose port
+# Expose port 8000
 EXPOSE 8000
 
 # Run the application
