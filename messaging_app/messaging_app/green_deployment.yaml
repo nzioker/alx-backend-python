@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: django-messaging-app-green
+  namespace: messaging-app
+  labels:
+    app: django-messaging
+    version: green
+    tier: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: django-messaging
+      version: green
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: django-messaging
+        version: green
+        tier: backend
+    spec:
+      containers:
+      - name: django-app
+        image: django-messaging-app:1.1  # New version
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+        envFrom:
+        - configMapRef:
+            name: django-config
+        - secretRef:
+            name: django-secrets
+        env:
+        - name: APP_VERSION
+          value: "1.1-green"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health/
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready/
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
