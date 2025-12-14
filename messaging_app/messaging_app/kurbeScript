@@ -1,1 +1,176 @@
+#!/bin/bash
 
+# Kubernetes Local Cluster Setup Script
+# This script sets up and verifies a local Kubernetes cluster
+
+set -e  # Exit on error
+
+echo "========================================"
+echo "Kubernetes Local Cluster Setup"
+echo "========================================"
+
+# Function to check if a command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Function to install minikube on Linux
+install_minikube() {
+    echo "Installing Minikube..."
+    
+    # Check if minikube is already installed
+    if command_exists minikube; then
+        echo "Minikube is already installed"
+        return
+    fi
+    
+    # Download and install minikube
+    curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+    sudo install minikube-linux-amd64 /usr/local/bin/minikube
+    rm minikube-linux-amd64
+    
+    echo "Minikube installed successfully"
+}
+
+# Function to install kubectl
+install_kubectl() {
+    echo "Installing kubectl..."
+    
+    if command_exists kubectl; then
+        echo "kubectl is already installed"
+        return
+    fi
+    
+    # Download kubectl
+    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    
+    # Install kubectl
+    sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+    rm kubectl
+    
+    echo "kubectl installed successfully"
+}
+
+# Function to start minikube cluster
+start_cluster() {
+    echo "Starting Minikube cluster..."
+    
+    # Check if cluster is already running
+    if minikube status | grep -q "Running"; then
+        echo "Minikube cluster is already running"
+        return
+    fi
+    
+    # Start minikube with specific configuration
+    minikube start \
+        --cpus=2 \
+        --memory=4096 \
+        --disk-size=20g \
+        --driver=docker \
+        --kubernetes-version=v1.26.0
+    
+    # Configure kubectl to use minikube context
+    minikube update-context
+    
+    echo "Minikube cluster started successfully"
+}
+
+# Function to verify cluster status
+verify_cluster() {
+    echo "Verifying cluster status..."
+    
+    # Check cluster info
+    echo "1. Checking cluster info:"
+    kubectl cluster-info
+    
+    # Check nodes
+    echo -e "\n2. Checking nodes:"
+    kubectl get nodes
+    
+    # Check if all nodes are ready
+    READY_NODES=$(kubectl get nodes --no-headers | grep -c "Ready")
+    if [ "$READY_NODES" -eq 0 ]; then
+        echo "ERROR: No nodes are ready!"
+        exit 1
+    fi
+    
+    echo "Cluster verification completed successfully"
+}
+
+# Function to get available pods in all namespaces
+get_available_pods() {
+    echo "Retrieving available pods..."
+    
+    # Get pods from all namespaces
+    kubectl get pods --all-namespaces
+    
+    # Get pod details in kube-system namespace
+    echo -e "\nPods in kube-system namespace:"
+    kubectl get pods -n kube-system
+    
+    # Get pod count
+    POD_COUNT=$(kubectl get pods --all-namespaces --no-headers | wc -l)
+    echo -e "\nTotal pods running: $POD_COUNT"
+}
+
+# Function to check system requirements
+check_requirements() {
+    echo "Checking system requirements..."
+    
+    # Check Docker
+    if ! command_exists docker; then
+        echo "ERROR: Docker is not installed. Please install Docker first."
+        echo "Visit: https://docs.docker.com/engine/install/"
+        exit 1
+    fi
+    
+    # Start Docker service if not running
+    if ! docker info >/dev/null 2>&1; then
+        echo "Starting Docker service..."
+        sudo systemctl start docker
+        sudo systemctl enable docker
+    fi
+    
+    # Add user to docker group if needed
+    if ! groups $USER | grep -q docker; then
+        echo "WARNING: User not in docker group. You may need to run:"
+        echo "  sudo usermod -aG docker $USER"
+        echo "Then log out and log back in."
+    fi
+}
+
+# Main execution
+main() {
+    echo "Starting Kubernetes setup process..."
+    
+    # Check requirements
+    check_requirements
+    
+    # Install tools
+    install_kubectl
+    install_minikube
+    
+    # Start cluster
+    start_cluster
+    
+    # Verify cluster
+    verify_cluster
+    
+    # Get pods
+    get_available_pods
+    
+    # Display useful commands
+    echo -e "\n========================================"
+    echo "Useful Commands:"
+    echo "========================================"
+    echo "To access Kubernetes dashboard: minikube dashboard"
+    echo "To stop cluster: minikube stop"
+    echo "To delete cluster: minikube delete"
+    echo "To ssh into minikube: minikube ssh"
+    echo "To get cluster status: minikube status"
+    echo "To get service URL: minikube service <service-name> --url"
+    echo -e "\nSetup completed successfully!"
+}
+
+# Run main function
+main
