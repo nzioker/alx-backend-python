@@ -1,0 +1,230 @@
+#!/bin/bash
+
+# Blue-Green Deployment Script for Django Messaging App
+# This script implements blue-green deployment strategy
+
+set -e
+
+echo "========================================"
+echo "Blue-Green Deployment Strategy"
+echo "========================================"
+
+# Function to deploy blue version
+deploy_blue() {
+    echo "Deploying BLUE version (v1.0)..."
+    
+    # Apply blue deployment
+    kubectl apply -f blue_deployment.yaml
+    
+    # Wait for blue pods to be ready
+    echo "Waiting for BLUE pods to be ready..."
+    kubectl wait --for=condition=ready pod -l version=blue -n messaging-app --timeout=120s
+    
+    # Verify blue deployment
+    echo "BLUE deployment status:"
+    kubectl get deployment django-messaging-app-blue -n messaging-app
+    kubectl get pods -n messaging-app -l version=blue
+}
+
+# Function to deploy green version
+deploy_green() {
+    echo "Deploying GREEN version (v1.1)..."
+    
+    # Apply green deployment
+    kubectl apply -f green_deployment.yaml
+    
+    # Wait for green pods to be ready
+    echo "Waiting for GREEN pods to be ready..."
+    kubectl wait --for=condition=ready pod -l version=green -n messaging-app --timeout=120s
+    
+    # Verify green deployment
+    echo "GREEN deployment status:"
+    kubectl get deployment django-messaging-app-green -n messaging-app
+    kubectl get pods -n messaging-app -l version=green
+}
+
+# Function to check logs for errors
+check_logs() {
+    echo -e "\nChecking logs for errors..."
+    
+    echo "1. Checking BLUE version logs:"
+    BLUE_PODS=$(kubectl get pods -n messaging-app -l version=blue -o name | head -1)
+    if [ -n "$BLUE_PODS" ]; then
+        kubectl logs $BLUE_PODS -n messaging-app --tail=20 | grep -i "error\|exception\|traceback" || echo "No errors found in BLUE version"
+    fi
+    
+    echo -e "\n2. Checking GREEN version logs:"
+    GREEN_PODS=$(kubectl get pods -n messaging-app -l version=green -o name | head -1)
+    if [ -n "$GREEN_PODS" ]; then
+        kubectl logs $GREEN_PODS -n messaging-app --tail=20 | grep -i "error\|exception\|traceback" || echo "No errors found in GREEN version"
+    fi
+    
+    # Check application startup logs
+    echo -e "\n3. Checking application startup:"
+    if [ -n "$GREEN_PODS" ]; then
+        echo "Green version startup logs:"
+        kubectl logs $GREEN_PODS -n messaging-app | grep -i "start\|ready\|listen" | tail -5
+    fi
+}
+
+# Function to switch traffic from blue to green
+switch_traffic_to_green() {
+    echo -e "\nSwitching traffic from BLUE to GREEN..."
+    
+    # Update the main service to point to green
+    kubectl patch service messaging-service -n messaging-app -p '{"spec":{"selector":{"version":"green"}}}'
+    
+    echo "Traffic switched to GREEN version"
+    
+    # Verify the switch
+    echo "Service selector updated:"
+    kubectl get service messaging-service -n messaging-app -o jsonpath='{.spec.selector}'
+    echo ""
+}
+
+# Function to switch traffic from green to blue (rollback)
+switch_traffic_to_blue() {
+    echo -e "\nRolling back traffic from GREEN to BLUE..."
+    
+    # Update the main service to point to blue
+    kubectl patch service messaging-service -n messaging-app -p '{"spec":{"selector":{"version":"blue"}}}'
+    
+    echo "Traffic switched back to BLUE version"
+}
+
+# Function to test both versions
+test_versions() {
+    echo -e "\nTesting both versions..."
+    
+    # Get service URLs
+    BLUE_URL=$(minikube service blue-service --url -n messaging-app)
+    GREEN_URL=$(minikube service green-service --url -n messaging-app)
+    
+    echo "BLUE version URL: $BLUE_URL"
+    echo "GREEN version URL: $GREEN_URL"
+    
+    # Test blue version
+    echo -e "\n1. Testing BLUE version:"
+    curl -s "$BLUE_URL/health/" | grep -q "healthy" && echo "✓ BLUE version is healthy" || echo "✗ BLUE version health check failed"
+    
+    # Test green version
+    echo -e "\n2. Testing GREEN version:"
+    curl -s "$GREEN_URL/health/" | grep -q "healthy" && echo "✓ GREEN version is healthy" || echo "✗ GREEN version health check failed"
+    
+    # Test API endpoints
+    echo -e "\n3. Testing API endpoints on GREEN version:"
+    curl -s "$GREEN_URL/api/messages/" -o /dev/null -w "HTTP Status: %{http_code}\n"
+    
+    # Check version info
+    echo -e "\n4. Checking version info:"
+    GREEN_VERSION=$(curl -s "$GREEN_URL/health/" | grep -o '"version":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+    echo "GREEN version: $GREEN_VERSION"
+}
+
+# Function to perform canary testing
+canary_test() {
+    echo -e "\nPerforming canary testing..."
+    
+    # Get the main service URL
+    MAIN_URL=$(minikube service messaging-service --url -n messaging-app)
+    
+    echo "Main service URL: $MAIN_URL"
+    
+    # Send test requests
+    echo "Sending test requests to main service..."
+    for i in {1..10}; do
+        RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" "$MAIN_URL/health/")
+        echo "Request $i: HTTP $RESPONSE"
+        sleep 0.5
+    done
+}
+
+# Function to clean up green deployment
+cleanup_green() {
+    echo -e "\nCleaning up GREEN deployment..."
+    kubectl delete deployment django-messaging-app-green -n messaging-app --ignore-not-found
+    echo "GREEN deployment cleaned up"
+}
+
+# Function to clean up blue deployment
+cleanup_blue() {
+    echo -e "\nCleaning up BLUE deployment..."
+    kubectl delete deployment django-messaging-app-blue -n messaging-app --ignore-not-found
+    echo "BLUE deployment cleaned up"
+}
+
+# Main execution with menu
+main() {
+    echo "Select deployment strategy:"
+    echo "1. Deploy both BLUE and GREEN versions"
+    echo "2. Switch traffic to GREEN"
+    echo "3. Rollback to BLUE"
+    echo "4. Test both versions"
+    echo "5. Perform canary test"
+    echo "6. Check logs"
+    echo "7. Clean up GREEN"
+    echo "8. Clean up BLUE"
+    echo "9. Full blue-green deployment flow"
+    echo "0. Exit"
+    
+    read -p "Enter choice: " choice
+    
+    case $choice in
+        1)
+            deploy_blue
+            deploy_green
+            check_logs
+            ;;
+        2)
+            switch_traffic_to_green
+            test_versions
+            ;;
+        3)
+            switch_traffic_to_blue
+            test_versions
+            ;;
+        4)
+            test_versions
+            ;;
+        5)
+            canary_test
+            ;;
+        6)
+            check_logs
+            ;;
+        7)
+            cleanup_green
+            ;;
+        8)
+            cleanup_blue
+            ;;
+        9)
+            echo "Running full blue-green deployment flow..."
+            deploy_blue
+            deploy_green
+            check_logs
+            test_versions
+            canary_test
+            echo -e "\nReady to switch traffic? (y/n)"
+            read switch
+            if [ "$switch" = "y" ]; then
+                switch_traffic_to_green
+                test_versions
+            fi
+            ;;
+        0)
+            echo "Exiting..."
+            exit 0
+            ;;
+        *)
+            echo "Invalid choice"
+            ;;
+    esac
+    
+    echo -e "\n========================================"
+    echo "Blue-Green Deployment Operations Complete"
+    echo "========================================"
+}
+
+# Run main function
+main
