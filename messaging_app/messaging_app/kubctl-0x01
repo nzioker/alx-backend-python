@@ -1,0 +1,183 @@
+#!/bin/bash
+
+# Scaling and Load Testing Script for Django Messaging App
+# This script scales the deployment and performs load testing
+
+set -e
+
+echo "========================================"
+echo "Django Messaging App Scaling & Load Test"
+echo "========================================"
+
+# Function to check if a command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Function to install wrk if not present
+install_wrk() {
+    if command_exists wrk; then
+        echo "wrk is already installed"
+        return
+    fi
+    
+    echo "Installing wrk for load testing..."
+    sudo apt-get update
+    sudo apt-get install -y wrk
+    echo "wrk installed successfully"
+}
+
+# Function to scale the deployment
+scale_deployment() {
+    echo "Scaling deployment to 3 replicas..."
+    
+    # Scale the deployment
+    kubectl scale deployment django-messaging-app --replicas=3 -n messaging-app
+    
+    # Wait for pods to be ready
+    echo "Waiting for pods to be ready..."
+    kubectl wait --for=condition=ready pod -l app=django-messaging -n messaging-app --timeout=120s
+    
+    # Verify scaling
+    echo "Verifying scaling..."
+    kubectl get deployment django-messaging-app -n messaging-app
+    kubectl get pods -n messaging-app -l app=django-messaging
+    
+    # Get pod details
+    POD_COUNT=$(kubectl get pods -n messaging-app -l app=django-messaging --no-headers | grep -c "Running")
+    if [ "$POD_COUNT" -eq 3 ]; then
+        echo "✓ Successfully scaled to 3 replicas"
+    else
+        echo "✗ Failed to scale to 3 replicas"
+        exit 1
+    fi
+}
+
+# Function to perform load testing
+perform_load_test() {
+    echo "Performing load testing..."
+    
+    # Get the service URL
+    SERVICE_URL=$(minikube service django-service --url -n messaging-app)
+    echo "Service URL: $SERVICE_URL"
+    
+    # Wait a moment for service to be fully available
+    sleep 10
+    
+    # Test endpoints
+    echo -e "\n1. Testing health endpoint:"
+    curl -s "$SERVICE_URL/health/" | head -20
+    
+    echo -e "\n2. Testing messages endpoint:"
+    curl -s "$SERVICE_URL/api/messages/" | head -20
+    
+    # Perform wrk load test
+    echo -e "\n3. Running load test with wrk (30 seconds, 10 threads, 100 connections):"
+    
+    if command_exists wrk; then
+        wrk -t10 -c100 -d30s --latency "$SERVICE_URL/health/" || echo "Load test completed"
+    else
+        echo "wrk not installed, using ab (Apache Bench) instead..."
+        if command_exists ab; then
+            ab -n 1000 -c 100 "$SERVICE_URL/health/"
+        else
+            echo "Neither wrk nor ab found. Installing ab..."
+            sudo apt-get install -y apache2-utils
+            ab -n 1000 -c 100 "$SERVICE_URL/health/"
+        fi
+    fi
+    
+    # Simple curl loop test
+    echo -e "\n4. Simple concurrent requests test:"
+    for i in {1..10}; do
+        curl -s -o /dev/null -w "%{http_code} " "$SERVICE_URL/health/" &
+    done
+    wait
+    echo -e "\nDone"
+}
+
+# Function to monitor resource usage
+monitor_resources() {
+    echo -e "\nMonitoring resource usage:"
+    
+    # Check if metrics-server is installed
+    if kubectl get pods -n kube-system | grep -q metrics-server; then
+        echo "1. Node resource usage:"
+        kubectl top nodes
+        
+        echo -e "\n2. Pod resource usage:"
+        kubectl top pods -n messaging-app
+        
+        echo -e "\n3. Deployment resource usage:"
+        kubectl top pod -l app=django-messaging -n messaging-app --containers
+    else
+        echo "Metrics server not installed. Installing..."
+        minikube addons enable metrics-server
+        sleep 30
+        
+        echo "1. Node resource usage:"
+        kubectl top nodes
+        
+        echo -e "\n2. Pod resource usage:"
+        kubectl top pods -n messaging-app
+    fi
+    
+    # Get pod details with resource info
+    echo -e "\n4. Pod details with resource allocation:"
+    kubectl get pods -n messaging-app -l app=django-messaging -o wide
+    kubectl describe pods -n messaging-app -l app=django-messaging | grep -A5 "Resources"
+}
+
+# Function to clean up after testing
+cleanup() {
+    echo -e "\nCleaning up: Scaling back to 1 replica..."
+    kubectl scale deployment django-messaging-app --replicas=1 -n messaging-app
+    kubectl wait --for=condition=ready pod -l app=django-messaging -n messaging-app --timeout=60s
+    echo "✓ Scaled back to 1 replica"
+}
+
+# Main execution
+main() {
+    # Check if kubectl is available
+    if ! command_exists kubectl; then
+        echo "ERROR: kubectl not found. Please install kubectl first."
+        exit 1
+    fi
+    
+    # Check if minikube is running
+    if ! minikube status | grep -q "Running"; then
+        echo "ERROR: Minikube is not running. Start it with: minikube start"
+        exit 1
+    fi
+    
+    # Install wrk for load testing
+    install_wrk
+    
+    # Scale deployment
+    scale_deployment
+    
+    # Perform load testing
+    perform_load_test
+    
+    # Monitor resources
+    monitor_resources
+    
+    # Display scaling information
+    echo -e "\n========================================"
+    echo "Scaling Information:"
+    echo "========================================"
+    echo "Current replicas:"
+    kubectl get deployment django-messaging-app -n messaging-app -o jsonpath='{.spec.replicas}'
+    echo -e "\nPod distribution across nodes:"
+    kubectl get pods -n messaging-app -l app=django-messaging -o wide | awk '{print $1, $7}'
+    
+    # Cleanup (comment out if you want to keep 3 replicas)
+    # cleanup
+    
+    echo -e "\n========================================"
+    echo "Scaling and load testing completed!"
+    echo "========================================"
+}
+
+# Run main function
+main
