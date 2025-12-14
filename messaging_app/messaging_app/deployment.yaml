@@ -1,1 +1,170 @@
-
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: messaging-app
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: django-config
+  namespace: messaging-app
+data:
+  DEBUG: "False"
+  DJANGO_SETTINGS_MODULE: "messaging_app.settings"
+  ALLOWED_HOSTS: "*"
+  CACHE_TIMEOUT: "60"
+  DB_ENGINE: "django.db.backends.postgresql"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: django-secrets
+  namespace: messaging-app
+type: Opaque
+data:
+  SECRET_KEY: "c3VwZXItc2VjcmV0LWtleS1mb3ItZGphbmdvLWNoYW5nZS10aGlz"  # base64 encoded: super-secret-key-for-django-change-this
+  DB_NAME: "bWVzc2FnaW5nX2Ri"  # messaging_db
+  DB_USER: "cG9zdGdyZXM="  # postgres
+  DB_PASSWORD: "cG9zdGdyZXNwYXNzd29yZA=="  # postgrespassword
+  DB_HOST: "cG9zdGdyZXMtc2VydmljZQ=="  # postgres-service
+  DB_PORT: "NTQzMg=="  # 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: django-messaging-app
+  namespace: messaging-app
+  labels:
+    app: django-messaging
+    tier: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: django-messaging
+      tier: backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: django-messaging
+        tier: backend
+        version: "1.0"
+    spec:
+      containers:
+      - name: django-app
+        image: django-messaging-app:1.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        env:
+        - name: DEBUG
+          valueFrom:
+            configMapKeyRef:
+              name: django-config
+              key: DEBUG
+        - name: DJANGO_SETTINGS_MODULE
+          valueFrom:
+            configMapKeyRef:
+              name: django-config
+              key: DJANGO_SETTINGS_MODULE
+        - name: ALLOWED_HOSTS
+          valueFrom:
+            configMapKeyRef:
+              name: django-config
+              key: ALLOWED_HOSTS
+        - name: CACHE_TIMEOUT
+          valueFrom:
+            configMapKeyRef:
+              name: django-config
+              key: CACHE_TIMEOUT
+        - name: DB_ENGINE
+          valueFrom:
+            configMapKeyRef:
+              name: django-config
+              key: DB_ENGINE
+        - name: SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: django-secrets
+              key: SECRET_KEY
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: django-secrets
+              key: DB_NAME
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: django-secrets
+              key: DB_USER
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: django-secrets
+              key: DB_PASSWORD
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: django-secrets
+              key: DB_HOST
+        - name: DB_PORT
+          valueFrom:
+            secretKeyRef:
+              name: django-secrets
+              key: DB_PORT
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health/
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready/
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 1
+        volumeMounts:
+        - name: static-files
+          mountPath: /app/staticfiles
+        - name: media-files
+          mountPath: /app/media
+      volumes:
+      - name: static-files
+        emptyDir: {}
+      - name: media-files
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: django-service
+  namespace: messaging-app
+spec:
+  selector:
+    app: django-messaging
+    tier: backend
+  ports:
+  - port: 8000
+    targetPort: 8000
+    protocol: TCP
+    name: http
+  type: ClusterIP
