@@ -1,0 +1,253 @@
+pipeline {
+    agent any
+    
+    environment {
+        // Docker Hub credentials (configure in Jenkins credentials)
+        DOCKER_REGISTRY = credentials('docker-hub-credentials')
+        DOCKER_IMAGE = 'yourusername/messaging-app'
+        DOCKER_TAG = "${BUILD_NUMBER}"
+        
+        // GitHub credentials (configure in Jenkins credentials)
+        GITHUB_CREDENTIALS = credentials('github-credentials')
+        
+        // Python environment
+        PYTHON_VERSION = '3.9'
+        VENV_PATH = 'venv'
+    }
+    
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds()
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                // Checkout code from GitHub
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    extensions: [],
+                    userRemoteConfigs: [[
+                        url: 'https://github.com/yourusername/alx-backend-python.git',
+                        credentialsId: 'github-credentials'
+                    ]]
+                ])
+                
+                // Print current directory and branch
+                sh 'pwd'
+                sh 'git branch'
+                sh 'git log --oneline -5'
+            }
+        }
+        
+        stage('Setup Python Environment') {
+            steps {
+                script {
+                    // Setup Python virtual environment
+                    sh """
+                    python${PYTHON_VERSION} -m venv ${VENV_PATH}
+                    . ${VENV_PATH}/bin/activate
+                    python --version
+                    pip --version
+                    """
+                }
+            }
+        }
+        
+        stage('Install Dependencies') {
+            steps {
+                script {
+                    // Install dependencies
+                    sh """
+                    . ${VENV_PATH}/bin/activate
+                    pip install --upgrade pip
+                    pip install -r requirements.txt
+                    
+                    # Install test dependencies if requirements-dev.txt exists
+                    if [ -f requirements-dev.txt ]; then
+                        pip install -r requirements-dev.txt
+                    fi
+                    
+                    # Install Django and pytest if not in requirements
+                    pip install django pytest pytest-django pytest-cov flake8 black
+                    """
+                }
+            }
+        }
+        
+        stage('Code Quality Checks') {
+            steps {
+                script {
+                    sh """
+                    . ${VENV_PATH}/bin/activate
+                    
+                    # Run flake8 for linting
+                    echo "Running flake8..."
+                    flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics || true
+                    flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+                    
+                    # Run black for code formatting check
+                    echo "Running black check..."
+                    black --check . || true
+                    """
+                }
+            }
+            post {
+                failure {
+                    echo 'Code quality checks failed!'
+                }
+            }
+        }
+        
+        stage('Run Tests') {
+            steps {
+                script {
+                    // Run Django tests with pytest
+                    sh """
+                    . ${VENV_PATH}/bin/activate
+                    
+                    # Set Django settings module
+                    export DJANGO_SETTINGS_MODULE=messaging_app.settings
+                    
+                    # Run pytest with coverage
+                    echo "Running tests with pytest..."
+                    pytest messaging_app/ \
+                        --cov=messaging_app \
+                        --cov-report=xml:coverage.xml \
+                        --cov-report=html:coverage_html \
+                        --cov-report=term \
+                        -v \
+                        --junitxml=test-results.xml
+                    
+                    # Run Django tests directly as fallback
+                    echo "Running Django tests..."
+                    python manage.py test || true
+                    """
+                }
+            }
+            post {
+                always {
+                    // Archive test results
+                    junit 'test-results.xml'
+                    
+                    // Archive coverage report
+                    publishHTML([
+                        reportDir: 'coverage_html',
+                        reportFiles: 'index.html',
+                        reportName: 'Coverage Report',
+                        keepAll: true
+                    ])
+                }
+                failure {
+                    echo 'Tests failed!'
+                }
+            }
+        }
+        
+        stage('Generate Test Report') {
+            steps {
+                script {
+                    // Generate HTML test report
+                    sh """
+                    . ${VENV_PATH}/bin/activate
+                    
+                    # Generate test summary
+                    echo "=== TEST SUMMARY ===" > test-summary.txt
+                    echo "Build Number: ${BUILD_NUMBER}" >> test-summary.txt
+                    echo "Build URL: ${BUILD_URL}" >> test-summary.txt
+                    echo "Timestamp: \$(date)" >> test-summary.txt
+                    echo "" >> test-summary.txt
+                    
+                    # Extract test results
+                    if [ -f test-results.xml ]; then
+                        echo "Test Results:" >> test-summary.txt
+                        echo "Total tests: \$(grep -o 'tests=\"[0-9]*\"' test-results.xml | grep -o '[0-9]*' | head -1)" >> test-summary.txt
+                        echo "Failed tests: \$(grep -o 'failures=\"[0-9]*\"' test-results.xml | grep -o '[0-9]*' | head -1)" >> test-summary.txt
+                        echo "Errors: \$(grep -o 'errors=\"[0-9]*\"' test-results.xml | grep -o '[0-9]*' | head -1)" >> test-summary.txt
+                    fi
+                    
+                    # Extract coverage results
+                    if [ -f coverage.xml ]; then
+                        echo "" >> test-summary.txt
+                        echo "Coverage Results:" >> test-summary.txt
+                        echo "Line coverage: \$(grep -o 'line-rate=\"[0-9.]*\"' coverage.xml | grep -o '[0-9.]*' | head -1)" >> test-summary.txt
+                        echo "Branch coverage: \$(grep -o 'branch-rate=\"[0-9.]*\"' coverage.xml | grep -o '[0-9.]*' | head -1)" >> test-summary.txt
+                    fi
+                    
+                    cat test-summary.txt
+                    """
+                }
+            }
+            post {
+                always {
+                    // Archive test summary
+                    archiveArtifacts artifacts: 'test-summary.txt', fingerprint: true
+                    
+                    // Archive coverage.xml
+                    archiveArtifacts artifacts: 'coverage.xml', fingerprint: true
+                    
+                    // Publish coverage report
+                    publishCoverage(
+                        adapters: [jacocoAdapter('coverage.xml')],
+                        sourceFileResolver: sourceFiles('STORE_LAST_BUILD')
+                    )
+                }
+            }
+        }
+        
+        stage('Security Scan') {
+            steps {
+                script {
+                    // Run security scan
+                    sh """
+                    . ${VENV_PATH}/bin/activate
+                    
+                    # Install security scanning tools
+                    pip install bandit safety
+                    
+                    # Run bandit for security scanning
+                    echo "Running bandit security scan..."
+                    bandit -r . -f json -o bandit-report.json || true
+                    
+                    # Run safety for dependency checking
+                    echo "Running safety check..."
+                    safety check --json > safety-report.json || true
+                    """
+                }
+            }
+            post {
+                always {
+                    // Archive security reports
+                    archiveArtifacts artifacts: 'bandit-report.json', fingerprint: true
+                    archiveArtifacts artifacts: 'safety-report.json', fingerprint: true
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            // Clean up
+            sh 'rm -rf venv || true'
+            sh 'rm -rf __pycache__ || true'
+            sh 'rm -rf *.pyc || true'
+            
+            // Send notifications
+            echo "Build ${BUILD_NUMBER} completed with status: ${currentBuild.currentResult}"
+        }
+        success {
+            echo 'Pipeline completed successfully!'
+            // You can add success notifications here
+        }
+        failure {
+            echo 'Pipeline failed!'
+            // You can add failure notifications here
+        }
+        unstable {
+            echo 'Pipeline is unstable!'
+            // You can add unstable notifications here
+        }
+    }
+}
