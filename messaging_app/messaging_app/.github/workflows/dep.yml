@@ -1,0 +1,452 @@
+name: Docker Build and Push
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags:
+      - 'v*'  # Trigger on version tags like v1.0.0
+    paths:
+      - 'messaging_app/**'
+      - 'Dockerfile'
+      - '.github/workflows/dep.yml'
+      - 'requirements.txt'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'messaging_app/**'
+      - 'Dockerfile'
+      - '.github/workflows/dep.yml'
+  release:
+    types: [published]
+  workflow_dispatch:  # Manual trigger
+    inputs:
+      tag:
+        description: 'Docker image tag'
+        required: false
+        default: 'latest'
+      push_to_registry:
+        description: 'Push to Docker Registry'
+        type: boolean
+        default: true
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: ${{ github.repository_owner }}/messaging-app
+  PYTHON_VERSION: '3.9-slim'
+  DJANGO_SETTINGS_MODULE: 'messaging_app.settings'
+
+jobs:
+  docker:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:master
+            network=host
+        
+      - name: Log in to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=schedule
+            type=ref,event=branch
+            type=ref,event=pr
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=Django Messaging App
+            org.opencontainers.image.description=A Django-based messaging application with REST API
+            org.opencontainers.image.vendor=ALX Backend Python
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.ref_name }}
+        
+      - name: Create Dockerfile if not exists
+        run: |
+          if [ ! -f "Dockerfile" ]; then
+            echo "Creating Dockerfile..."
+            cat > Dockerfile << 'EOF'
+            # Use official Python runtime as base image
+            FROM python:${{ env.PYTHON_VERSION }} AS builder
+
+            # Set environment variables
+            ENV PYTHONDONTWRITEBYTECODE=1
+            ENV PYTHONUNBUFFERED=1
+            ENV DJANGO_SETTINGS_MODULE=${{ env.DJANGO_SETTINGS_MODULE }}
+            ENV PATH="/venv/bin:$PATH"
+
+            # Set work directory
+            WORKDIR /app
+
+            # Install system dependencies
+            RUN apt-get update \
+                && apt-get install -y --no-install-recommends \
+                    gcc \
+                    libpq-dev \
+                    curl \
+                    netcat \
+                    default-libmysqlclient-dev \
+                    pkg-config \
+                && rm -rf /var/lib/apt/lists/* \
+                && apt-get clean
+
+            # Create virtual environment
+            RUN python -m venv /venv
+
+            # Install Python dependencies
+            COPY requirements.txt .
+            RUN pip install --upgrade pip \
+                && pip install --no-cache-dir -r requirements.txt
+
+            # --- Production stage ---
+            FROM python:${{ env.PYTHON_VERSION }}
+
+            # Set environment variables
+            ENV PYTHONDONTWRITEBYTECODE=1
+            ENV PYTHONUNBUFFERED=1
+            ENV DJANGO_SETTINGS_MODULE=${{ env.DJANGO_SETTINGS_MODULE }}
+            ENV PATH="/venv/bin:$PATH"
+
+            # Copy virtual environment from builder
+            COPY --from=builder /venv /venv
+
+            # Install runtime system dependencies
+            RUN apt-get update \
+                && apt-get install -y --no-install-recommends \
+                    curl \
+                    netcat \
+                    libpq-dev \
+                    default-libmysqlclient-dev \
+                && rm -rf /var/lib/apt/lists/* \
+                && apt-get clean
+
+            # Create non-root user
+            RUN groupadd -r django && useradd -r -g django django
+
+            # Set work directory
+            WORKDIR /app
+
+            # Copy application code
+            COPY --chown=django:django . .
+
+            # Change to non-root user
+            USER django
+
+            # Create necessary directories
+            RUN mkdir -p /app/static /app/media /app/logs \
+                && chown -R django:django /app/static /app/media /app/logs
+
+            # Health check
+            HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+              CMD curl -f http://localhost:8000/health/ || exit 1
+
+            # Expose port
+            EXPOSE 8000
+
+            # Run application with Gunicorn
+            CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "3", "--worker-class", "sync", "messaging_app.wsgi:application"]
+            EOF
+            echo "Dockerfile created successfully"
+          else
+            echo "Using existing Dockerfile"
+            cat Dockerfile
+          fi
+          
+          # Create docker-compose.yml for testing
+          cat > docker-compose.test.yml << 'EOF'
+          version: '3.8'
+
+          services:
+            db:
+              image: mysql:8.0
+              environment:
+                MYSQL_ROOT_PASSWORD: password
+                MYSQL_DATABASE: messaging_db
+                MYSQL_USER: django_user
+                MYSQL_PASSWORD: django_password
+              ports:
+                - "3306:3306"
+              healthcheck:
+                test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+                timeout: 20s
+                retries: 10
+
+            redis:
+              image: redis:7-alpine
+              ports:
+                - "6379:6379"
+
+            app:
+              build: .
+              ports:
+                - "8000:8000"
+              environment:
+                DATABASE_URL: mysql://django_user:django_password@db:3306/messaging_db
+                REDIS_URL: redis://redis:6379/0
+                DJANGO_SETTINGS_MODULE: messaging_app.settings
+                SECRET_KEY: development-secret-key
+                DEBUG: "True"
+              depends_on:
+                db:
+                  condition: service_healthy
+                redis:
+                  condition: service_started
+              command: >
+                sh -c "python manage.py migrate &&
+                       python manage.py collectstatic --noinput &&
+                       gunicorn messaging_app.wsgi:application --bind 0.0.0.0:8000"
+          EOF
+          
+      - name: Create .dockerignore if not exists
+        run: |
+          if [ ! -f ".dockerignore" ]; then
+            echo "Creating .dockerignore..."
+            cat > .dockerignore << 'EOF'
+            # Git
+            .git
+            .gitignore
+            .gitattributes
+            
+            # Python
+            __pycache__/
+            *.py[cod]
+            *$py.class
+            *.so
+            .Python
+            venv/
+            env/
+            .env
+            .venv
+            
+            # Django
+            *.sqlite3
+            *.log
+            media/
+            
+            # Testing
+            .pytest_cache/
+            .coverage
+            htmlcov/
+            .tox/
+            .mypy_cache/
+            
+            # IDE
+            .vscode/
+            .idea/
+            *.swp
+            *.swo
+            
+            # OS
+            .DS_Store
+            Thumbs.db
+            
+            # Documentation
+            docs/_build/
+            
+            # Temporary files
+            tmp/
+            temp/
+            
+            # Docker
+            docker-compose.yml
+            docker-compose.*.yml
+            Dockerfile.dev
+            
+            # GitHub Actions
+            .github/
+            
+            # Node.js (if any)
+            node_modules/
+            npm-debug.log*
+            yarn-debug.log*
+            yarn-error.log*
+            EOF
+            echo ".dockerignore created successfully"
+          fi
+          
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          outputs: type=docker,dest=/tmp/image.tar
+          
+      - name: Test Docker image
+        run: |
+          echo "Loading Docker image for testing..."
+          docker load --input /tmp/image.tar
+          
+          echo "Running container tests..."
+          # Run basic container test
+          docker run --rm -d --name test-app \
+            -e DJANGO_SETTINGS_MODULE=messaging_app.settings \
+            -e SECRET_KEY=test-key \
+            -e DEBUG=True \
+            $(docker images --filter="reference=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}" --format "{{.Repository}}:{{.Tag}}" | head -1)
+          
+          # Wait for container to start
+          sleep 10
+          
+          # Check container health
+          echo "Container status:"
+          docker ps -a | grep test-app
+          
+          # Get container logs
+          echo "Container logs:"
+          docker logs test-app || true
+          
+          # Clean up
+          docker stop test-app || true
+          docker rm test-app || true
+          
+      - name: Scan Docker image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '/tmp/image.tar'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+          
+      - name: Push Docker image
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch')
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: spdx-json
+          
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.spdx.json
+          retention-days: 30
+          
+      - name: Update Docker Hub description
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: |
+          echo "Updating Docker Hub description..."
+          # This would require Docker Hub API token with write permissions
+          # Uncomment and configure if you have DOCKERHUB_TOKEN with appropriate permissions
+          # curl -X PATCH \
+          #   -H "Authorization: JWT ${{ secrets.DOCKERHUB_TOKEN }}" \
+          #   -H "Content-Type: application/json" \
+          #   -d '{"full_description": "Django Messaging Application\n\nBuilt from: ${{ github.repository }}\nCommit: ${{ github.sha }}\n"}' \
+          #   https://hub.docker.com/v2/repositories/${{ env.IMAGE_NAME }}/
+          
+  deploy:
+    name: Deploy to Environment
+    runs-on: ubuntu-latest
+    needs: docker
+    if: github.ref == 'refs/heads/main' || github.ref_type == 'tag'
+    
+    environment:
+      name: ${{ github.ref == 'refs/heads/main' && 'staging' || 'production' }}
+      url: ${{ github.ref == 'refs/heads/main' && 'https://staging.example.com' || 'https://production.example.com' }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Deploy to Kubernetes
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo "Deploying to ${{ env.ENVIRONMENT }} environment..."
+          echo "Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          
+          # Example Kubernetes deployment commands
+          # kubectl set image deployment/messaging-app messaging-app=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          # kubectl rollout status deployment/messaging-app
+          
+      - name: Deploy to Production
+        if: github.ref_type == 'tag'
+        run: |
+          echo "Deploying to production..."
+          echo "Version: ${{ github.ref_name }}"
+          echo "Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}"
+          
+          # Production deployment commands would go here
+          
+  notify:
+    name: Send Deployment Notifications
+    runs-on: ubuntu-latest
+    needs: [docker, deploy]
+    if: always()
+    
+    steps:
+      - name: Send Slack notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#deployments'
+          username: 'Docker Deploy Bot'
+          icon_emoji: ':docker:'
+          fields: |
+            event,repository,commit,tag
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          
+      - name: Update GitHub deployment status
+        if: github.event_name == 'deployment'
+        uses: bobheadxi/deployments@v1
+        with:
+          step: finish
+          token: ${{ secrets.GITHUB_TOKEN }}
+          env: ${{ github.event.deployment.environment }}
+          status: ${{ job.status }}
+          deployment_id: ${{ github.event.deployment.id }}
+
+# Concurrency control
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
