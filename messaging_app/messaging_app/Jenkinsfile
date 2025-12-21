@@ -13,6 +13,7 @@ pipeline {
         // Python environment
         PYTHON_VERSION = '3.9'
         VENV_PATH = 'venv'
+        PROJECT_PATH = 'messaging_app'
     }
     
     options {
@@ -37,6 +38,7 @@ pipeline {
                 
                 // Print current directory and branch
                 sh 'pwd'
+                sh 'ls -la'
                 sh 'git branch'
                 sh 'git log --oneline -5'
             }
@@ -50,7 +52,7 @@ pipeline {
                     python${PYTHON_VERSION} -m venv ${VENV_PATH}
                     . ${VENV_PATH}/bin/activate
                     python --version
-                    pip --version
+                    pip3 --version
                     """
                 }
             }
@@ -59,19 +61,39 @@ pipeline {
         stage('Install Dependencies') {
             steps {
                 script {
-                    // Install dependencies
+                    // Check if requirements.txt exists
+                    sh """
+                    echo "Checking for requirements files..."
+                    ls -la ${PROJECT_PATH}/
+                    
+                    if [ -f "${PROJECT_PATH}/requirements.txt" ]; then
+                        echo "Found ${PROJECT_PATH}/requirements.txt"
+                    else
+                        echo "Warning: ${PROJECT_PATH}/requirements.txt not found"
+                    fi
+                    """
+                    
+                    // Install dependencies using pip3
                     sh """
                     . ${VENV_PATH}/bin/activate
-                    pip install --upgrade pip
-                    pip install -r requirements.txt
                     
-                    # Install test dependencies if requirements-dev.txt exists
-                    if [ -f requirements-dev.txt ]; then
-                        pip install -r requirements-dev.txt
+                    echo "Installing dependencies..."
+                    
+                    # Install from messaging_app/requirements.txt
+                    if [ -f "${PROJECT_PATH}/requirements.txt" ]; then
+                        pip3 install --upgrade pip
+                        pip3 install -r ${PROJECT_PATH}/requirements.txt
+                    else
+                        # Fallback: install basic Django dependencies
+                        pip3 install django djangorestframework django-cors-headers
                     fi
                     
-                    # Install Django and pytest if not in requirements
-                    pip install django pytest pytest-django pytest-cov flake8 black
+                    # Install test dependencies
+                    pip3 install pytest pytest-django pytest-cov pytest-html
+                    pip3 install flake8 black bandit safety
+                    
+                    # List installed packages
+                    pip3 freeze
                     """
                 }
             }
@@ -83,47 +105,68 @@ pipeline {
                     sh """
                     . ${VENV_PATH}/bin/activate
                     
+                    echo "Running code quality checks..."
+                    
                     # Run flake8 for linting
-                    echo "Running flake8..."
-                    flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics || true
-                    flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+                    echo "=== Running flake8 ==="
+                    flake8 ${PROJECT_PATH}/ --count --select=E9,F63,F7,F82 --show-source --statistics
+                    flake8 ${PROJECT_PATH}/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
                     
                     # Run black for code formatting check
-                    echo "Running black check..."
-                    black --check . || true
+                    echo "=== Running black check ==="
+                    black --check ${PROJECT_PATH}/ || echo "Black check completed"
+                    
+                    # Run bandit for security
+                    echo "=== Running bandit security scan ==="
+                    bandit -r ${PROJECT_PATH}/ -f json -o bandit-report.json || echo "Bandit scan completed"
                     """
                 }
             }
             post {
-                failure {
-                    echo 'Code quality checks failed!'
+                always {
+                    // Archive security report
+                    archiveArtifacts artifacts: 'bandit-report.json', fingerprint: true
                 }
             }
         }
         
-        stage('Run Tests') {
+        stage('Run Tests with pytest') {
             steps {
                 script {
                     // Run Django tests with pytest
                     sh """
                     . ${VENV_PATH}/bin/activate
                     
+                    echo "Setting up Django environment..."
+                    
                     # Set Django settings module
-                    export DJANGO_SETTINGS_MODULE=messaging_app.settings
+                    export DJANGO_SETTINGS_MODULE=${PROJECT_PATH}.settings
+                    export PYTHONPATH=\${PYTHONPATH}:${PROJECT_PATH}
+                    
+                    echo "DJANGO_SETTINGS_MODULE: \${DJANGO_SETTINGS_MODULE}"
+                    echo "PYTHONPATH: \${PYTHONPATH}"
+                    
+                    # Change to project directory
+                    cd ${PROJECT_PATH}
                     
                     # Run pytest with coverage
-                    echo "Running tests with pytest..."
-                    pytest messaging_app/ \
-                        --cov=messaging_app \
-                        --cov-report=xml:coverage.xml \
-                        --cov-report=html:coverage_html \
+                    echo "=== Running tests with pytest ==="
+                    pytest . \
+                        --cov=. \
+                        --cov-report=xml:../coverage.xml \
+                        --cov-report=html:../coverage_html \
                         --cov-report=term \
                         -v \
-                        --junitxml=test-results.xml
+                        --junitxml=../test-results.xml \
+                        --html=../test-report.html \
+                        --self-contained-html
                     
-                    # Run Django tests directly as fallback
-                    echo "Running Django tests..."
-                    python manage.py test || true
+                    # Also run Django tests directly as backup
+                    echo "=== Running Django tests directly ==="
+                    python manage.py test --verbosity=2 || echo "Django tests completed"
+                    
+                    # Go back to root directory
+                    cd ..
                     """
                 }
             }
@@ -132,6 +175,14 @@ pipeline {
                     // Archive test results
                     junit 'test-results.xml'
                     
+                    // Archive HTML test report
+                    publishHTML([
+                        reportDir: '.',
+                        reportFiles: 'test-report.html',
+                        reportName: 'Pytest HTML Report',
+                        keepAll: true
+                    ])
+                    
                     // Archive coverage report
                     publishHTML([
                         reportDir: 'coverage_html',
@@ -139,6 +190,10 @@ pipeline {
                         reportName: 'Coverage Report',
                         keepAll: true
                     ])
+                    
+                    // Archive artifacts
+                    archiveArtifacts artifacts: 'test-results.xml', fingerprint: true
+                    archiveArtifacts artifacts: 'coverage.xml', fingerprint: true
                 }
                 failure {
                     echo 'Tests failed!'
@@ -149,33 +204,83 @@ pipeline {
         stage('Generate Test Report') {
             steps {
                 script {
-                    // Generate HTML test report
+                    // Generate comprehensive test report
                     sh """
                     . ${VENV_PATH}/bin/activate
                     
-                    # Generate test summary
-                    echo "=== TEST SUMMARY ===" > test-summary.txt
-                    echo "Build Number: ${BUILD_NUMBER}" >> test-summary.txt
-                    echo "Build URL: ${BUILD_URL}" >> test-summary.txt
-                    echo "Timestamp: \$(date)" >> test-summary.txt
-                    echo "" >> test-summary.txt
+                    echo "=== GENERATING TEST REPORT ==="
                     
-                    # Extract test results
+                    # Create detailed test summary
+                    cat > test-summary.txt << EOF
+                    JENKINS TEST REPORT
+                    ====================
+                    
+                    Project: Django Messaging App
+                    Build Number: ${BUILD_NUMBER}
+                    Build URL: ${BUILD_URL}
+                    Timestamp: $(date)
+                    
+                    GIT INFORMATION
+                    ---------------
+                    Repository: https://github.com/yourusername/alx-backend-python.git
+                    Branch: $(git branch --show-current)
+                    Commit: $(git log --oneline -1)
+                    
+                    ENVIRONMENT
+                    -----------
+                    Python Version: $(python --version)
+                    Django Version: $(python -c "import django; print(django.get_version())")
+                    Pip Version: $(pip3 --version | cut -d' ' -f2)
+                    
+                    TEST RESULTS
+                    ------------
+                    EOF
+                    
+                    # Extract test results from XML
                     if [ -f test-results.xml ]; then
-                        echo "Test Results:" >> test-summary.txt
-                        echo "Total tests: \$(grep -o 'tests=\"[0-9]*\"' test-results.xml | grep -o '[0-9]*' | head -1)" >> test-summary.txt
-                        echo "Failed tests: \$(grep -o 'failures=\"[0-9]*\"' test-results.xml | grep -o '[0-9]*' | head -1)" >> test-summary.txt
-                        echo "Errors: \$(grep -o 'errors=\"[0-9]*\"' test-results.xml | grep -o '[0-9]*' | head -1)" >> test-summary.txt
+                        echo "Extracting test results..."
+                        
+                        # Count tests
+                        TOTAL_TESTS=\$(grep -o 'tests=\"[0-9]*\"' test-results.xml | head -1 | grep -o '[0-9]*')
+                        FAILED_TESTS=\$(grep -o 'failures=\"[0-9]*\"' test-results.xml | head -1 | grep -o '[0-9]*')
+                        ERROR_TESTS=\$(grep -o 'errors=\"[0-9]*\"' test-results.xml | head -1 | grep -o '[0-9]*')
+                        SKIPPED_TESTS=\$(grep -o 'skipped=\"[0-9]*\"' test-results.xml | head -1 | grep -o '[0-9]*')
+                        
+                        cat >> test-summary.txt << EOF
+                        Total Tests: \${TOTAL_TESTS}
+                        Failed: \${FAILED_TESTS}
+                        Errors: \${ERROR_TESTS}
+                        Skipped: \${SKIPPED_TESTS}
+                        Success Rate: \$(( (TOTAL_TESTS - FAILED_TESTS - ERROR_TESTS) * 100 / TOTAL_TESTS ))% 
+                        
+                        EOF
+                    else
+                        echo "No test results found" >> test-summary.txt
                     fi
                     
                     # Extract coverage results
                     if [ -f coverage.xml ]; then
-                        echo "" >> test-summary.txt
-                        echo "Coverage Results:" >> test-summary.txt
-                        echo "Line coverage: \$(grep -o 'line-rate=\"[0-9.]*\"' coverage.xml | grep -o '[0-9.]*' | head -1)" >> test-summary.txt
-                        echo "Branch coverage: \$(grep -o 'branch-rate=\"[0-9.]*\"' coverage.xml | grep -o '[0-9.]*' | head -1)" >> test-summary.txt
+                        echo "Extracting coverage results..."
+                        
+                        LINE_COVERAGE=\$(grep -o 'line-rate=\"[0-9.]*\"' coverage.xml | head -1 | grep -o '[0-9.]*')
+                        BRANCH_COVERAGE=\$(grep -o 'branch-rate=\"[0-9.]*\"' coverage.xml | head -1 | grep -o '[0-9.]*')
+                        
+                        cat >> test-summary.txt << EOF
+                        COVERAGE REPORT
+                        ---------------
+                        Line Coverage: \${LINE_COVERAGE}
+                        Branch Coverage: \${BRANCH_COVERAGE}
+                        
+                        EOF
                     fi
                     
+                    # List test files
+                    echo "TEST FILES" >> test-summary.txt
+                    echo "----------" >> test-summary.txt
+                    find ${PROJECT_PATH} -name "*test*.py" -o -name "tests.py" | sort >> test-summary.txt
+                    
+                    # Display the report
+                    echo "=== TEST REPORT SUMMARY ==="
                     cat test-summary.txt
                     """
                 }
@@ -185,43 +290,56 @@ pipeline {
                     // Archive test summary
                     archiveArtifacts artifacts: 'test-summary.txt', fingerprint: true
                     
-                    // Archive coverage.xml
-                    archiveArtifacts artifacts: 'coverage.xml', fingerprint: true
-                    
                     // Publish coverage report
                     publishCoverage(
                         adapters: [jacocoAdapter('coverage.xml')],
                         sourceFileResolver: sourceFiles('STORE_LAST_BUILD')
                     )
+                    
+                    // Generate badge
+                    script {
+                        if (currentBuild.currentResult == 'SUCCESS') {
+                            sh 'echo "![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)" > build-status.md'
+                        } else {
+                            sh 'echo "![Build Status](https://img.shields.io/badge/build-failing-red.svg)" > build-status.md'
+                        }
+                        archiveArtifacts artifacts: 'build-status.md', fingerprint: true
+                    }
                 }
             }
         }
         
-        stage('Security Scan') {
+        stage('Build Artifacts') {
             steps {
                 script {
-                    // Run security scan
+                    // Create deployment artifacts
                     sh """
-                    . ${VENV_PATH}/bin/activate
+                    echo "Creating build artifacts..."
                     
-                    # Install security scanning tools
-                    pip install bandit safety
+                    # Create requirements.txt if it doesn't exist
+                    if [ ! -f "${PROJECT_PATH}/requirements.txt" ]; then
+                        echo "Creating requirements.txt..."
+                        . ${VENV_PATH}/bin/activate
+                        pip3 freeze > ${PROJECT_PATH}/requirements.txt
+                    fi
                     
-                    # Run bandit for security scanning
-                    echo "Running bandit security scan..."
-                    bandit -r . -f json -o bandit-report.json || true
+                    # Create build archive
+                    tar -czf messaging-app-build-\${BUILD_NUMBER}.tar.gz \
+                        ${PROJECT_PATH}/ \
+                        test-summary.txt \
+                        test-results.xml \
+                        coverage.xml \
+                        bandit-report.json
                     
-                    # Run safety for dependency checking
-                    echo "Running safety check..."
-                    safety check --json > safety-report.json || true
+                    # List created artifacts
+                    ls -la *.tar.gz
                     """
                 }
             }
             post {
                 always {
-                    // Archive security reports
-                    archiveArtifacts artifacts: 'bandit-report.json', fingerprint: true
-                    archiveArtifacts artifacts: 'safety-report.json', fingerprint: true
+                    // Archive build artifacts
+                    archiveArtifacts artifacts: '*.tar.gz', fingerprint: true
                 }
             }
         }
@@ -229,25 +347,35 @@ pipeline {
     
     post {
         always {
-            // Clean up
-            sh 'rm -rf venv || true'
-            sh 'rm -rf __pycache__ || true'
-            sh 'rm -rf *.pyc || true'
+            echo "=== PIPELINE COMPLETION ==="
+            echo "Build ${BUILD_NUMBER} - Status: ${currentBuild.currentResult}"
+            echo "Build URL: ${BUILD_URL}"
             
-            // Send notifications
-            echo "Build ${BUILD_NUMBER} completed with status: ${currentBuild.currentResult}"
+            // Clean up
+            sh """
+            echo "Cleaning up..."
+            rm -rf ${VENV_PATH} || true
+            rm -rf coverage_html || true
+            rm -f test-report.html || true
+            """
         }
         success {
-            echo 'Pipeline completed successfully!'
-            // You can add success notifications here
+            echo ' Pipeline completed successfully!'
+            
+            // Update build status
+            currentBuild.description = "SUCCESS - Build ${BUILD_NUMBER}"
         }
         failure {
-            echo 'Pipeline failed!'
-            // You can add failure notifications here
+            echo ' Pipeline failed!'
+            currentBuild.description = "FAILED - Build ${BUILD_NUMBER}"
         }
         unstable {
-            echo 'Pipeline is unstable!'
-            // You can add unstable notifications here
+            echo ' Pipeline is unstable!'
+            currentBuild.description = "UNSTABLE - Build ${BUILD_NUMBER}"
+        }
+        aborted {
+            echo ' Pipeline was aborted!'
+            currentBuild.description = "ABORTED - Build ${BUILD_NUMBER}"
         }
     }
 }
