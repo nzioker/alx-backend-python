@@ -1,0 +1,492 @@
+name: Django CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop, feature/* ]
+    paths:
+      - 'messaging_app/**'
+      - '.github/workflows/ci.yml'
+      - 'requirements.txt'
+      - 'pyproject.toml'
+      - 'setup.cfg'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'messaging_app/**'
+      - '.github/workflows/ci.yml'
+      - 'requirements.txt'
+      - 'pyproject.toml'
+      - 'setup.cfg'
+  workflow_dispatch:  # Manual trigger
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'test'
+        type: choice
+        options:
+        - test
+        - staging
+        - production
+
+env:
+  PYTHON_VERSION: '3.9'
+  DJANGO_SETTINGS_MODULE: 'messaging_app.settings'
+  SECRET_KEY: 'django-insecure-test-key-for-github-actions'
+  DEBUG: 'True'
+  
+jobs:
+  test:
+    name: Run Django Tests with MySQL
+    runs-on: ubuntu-latest
+    
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: password
+          MYSQL_DATABASE: messaging_db
+          MYSQL_USER: django_user
+          MYSQL_PASSWORD: django_password
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+        ports:
+          - 3306:3306
+    
+    strategy:
+      matrix:
+        python-version: ['3.8', '3.9', '3.10']
+        django-version: ['4.2', '4.1']
+        exclude:
+          - python-version: '3.8'
+            django-version: '4.2'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+        cache-dependency-path: |
+          messaging_app/requirements.txt
+          requirements.txt
+          pyproject.toml
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          default-libmysqlclient-dev \
+          gcc \
+          pkg-config \
+          curl \
+          git
+        echo "System dependencies installed"
+    
+    - name: Display Python and pip info
+      run: |
+        python --version
+        pip --version
+    
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install wheel
+        
+        # Check for requirements files in order of priority
+        if [ -f "messaging_app/requirements.txt" ]; then
+          echo "Installing from messaging_app/requirements.txt"
+          pip install -r messaging_app/requirements.txt
+        elif [ -f "requirements.txt" ]; then
+          echo "Installing from requirements.txt"
+          pip install -r requirements.txt
+        else
+          echo "No requirements.txt found, installing basic dependencies"
+          pip install django==${{ matrix.django-version }}
+          pip install djangorestframework django-cors-headers
+        fi
+        
+        # Install test dependencies
+        pip install \
+          pytest \
+          pytest-django \
+          pytest-cov \
+          pytest-html \
+          pytest-xdist \
+          mysqlclient \
+          coverage \
+          factory-boy \
+          Faker
+        
+        # Install development dependencies
+        pip install \
+          flake8 \
+          black \
+          isort \
+          bandit \
+          safety \
+          django-debug-toolbar
+        
+        # List installed packages
+        pip list
+    
+    - name: Wait for MySQL to be ready
+      run: |
+        echo "Waiting for MySQL to be ready..."
+        for i in {1..30}; do
+          if mysqladmin ping -h"127.0.0.1" -P"3306" -uroot -ppassword --silent; then
+            echo "MySQL is ready!"
+            break
+          fi
+          echo "Waiting for MySQL... ($i/30)"
+          sleep 2
+        done
+        
+        # Test MySQL connection
+        mysql -h 127.0.0.1 -P 3306 -u root -ppassword -e "SHOW DATABASES;"
+        mysql -h 127.0.0.1 -P 3306 -u root -ppassword -e "CREATE USER IF NOT EXISTS 'django_user'@'%' IDENTIFIED BY 'django_password';"
+        mysql -h 127.0.0.1 -P 3306 -u root -ppassword -e "GRANT ALL PRIVILEGES ON messaging_db.* TO 'django_user'@'%';"
+        mysql -h 127.0.0.1 -P 3306 -u root -ppassword -e "FLUSH PRIVILEGES;"
+    
+    - name: Create database configuration
+      run: |
+        cd messaging_app
+        # Create test settings if they don't exist
+        if [ ! -f "test_settings.py" ]; then
+          cat > test_settings.py << 'EOF'
+          """
+          Test settings for Django Messaging App
+          """
+          import os
+          from .settings import *
+          
+          # Database configuration for MySQL
+          DATABASES = {
+              'default': {
+                  'ENGINE': 'django.db.backends.mysql',
+                  'NAME': 'messaging_db',
+                  'USER': 'django_user',
+                  'PASSWORD': 'django_password',
+                  'HOST': '127.0.0.1',
+                  'PORT': '3306',
+                  'OPTIONS': {
+                      'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+                      'charset': 'utf8mb4',
+                  },
+                  'TEST': {
+                      'NAME': 'test_messaging_db',
+                  },
+              }
+          }
+          
+          # Use faster password hasher for tests
+          PASSWORD_HASHERS = [
+              'django.contrib.auth.hashers.MD5PasswordHasher',
+          ]
+          
+          # Disable logging for tests
+          LOGGING = {
+              'version': 1,
+              'disable_existing_loggers': False,
+              'handlers': {
+                  'null': {
+                      'class': 'logging.NullHandler',
+                  },
+              },
+              'loggers': {
+                  'django': {
+                      'handlers': ['null'],
+                      'level': 'CRITICAL',
+                  },
+              },
+          }
+          
+          # Disable caching for tests
+          CACHES = {
+              'default': {
+                  'BACKEND': 'django.core.cache.backends.dummy.DummyCache',
+              }
+          }
+          
+          # Disable debug toolbar
+          DEBUG_TOOLBAR_CONFIG = {
+              'SHOW_TOOLBAR_CALLBACK': lambda request: False
+          }
+          EOF
+          echo "Created test_settings.py"
+        fi
+        
+        ls -la *.py
+    
+    - name: Run database migrations
+      env:
+        DATABASE_URL: mysql://django_user:django_password@localhost:3306/messaging_db
+      run: |
+        cd messaging_app
+        echo "Running database migrations..."
+        
+        # Use test settings
+        export DJANGO_SETTINGS_MODULE=messaging_app.test_settings
+        
+        # Run migrations
+        python manage.py makemigrations --noinput
+        python manage.py migrate --noinput
+        
+        # Show migration status
+        python manage.py showmigrations
+        
+        # Create superuser for testing
+        echo "from django.contrib.auth import get_user_model; User = get_user_model(); User.objects.create_superuser('admin@test.com', 'admin', 'testpass123') if not User.objects.filter(email='admin@test.com').exists() else None" | python manage.py shell
+        
+        # Show created tables
+        echo "SHOW TABLES;" | mysql -h 127.0.0.1 -P 3306 -u django_user -pdjango_password messaging_db
+    
+    - name: Run tests with pytest
+      env:
+        DATABASE_URL: mysql://django_user:django_password@localhost:3306/messaging_db
+      run: |
+        cd messaging_app
+        
+        # Set test settings
+        export DJANGO_SETTINGS_MODULE=messaging_app.test_settings
+        
+        echo "=== Running tests with pytest ==="
+        
+        # Run tests with coverage and parallel execution
+        python -m pytest \
+          . \
+          --ds=messaging_app.test_settings \
+          --cov=. \
+          --cov-report=xml:../coverage.xml \
+          --cov-report=html:../coverage_html \
+          --cov-report=term \
+          --cov-fail-under=70 \
+          -v \
+          --junitxml=../test-results-${{ matrix.python-version }}-${{ matrix.django-version }}.xml \
+          --html=../test-report-${{ matrix.python-version }}-${{ matrix.django-version }}.html \
+          --self-contained-html \
+          -n auto \
+          --tb=short
+        
+        echo "=== Test Results ==="
+        
+        # Show test summary
+        python -m pytest . --ds=messaging_app.test_settings --co -q
+    
+    - name: Run Django management commands
+      if: always()
+      run: |
+        cd messaging_app
+        export DJANGO_SETTINGS_MODULE=messaging_app.test_settings
+        
+        # Check for missing migrations
+        python manage.py makemigrations --check --dry-run
+        
+        # Run check command
+        python manage.py check
+        
+        # Test creating a superuser
+        echo "from django.contrib.auth import get_user_model; User = get_user_model(); print(f'Total users: {User.objects.count()}')" | python manage.py shell
+    
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results-py${{ matrix.python-version }}-django${{ matrix.django-version }}
+        path: |
+          test-results-${{ matrix.python-version }}-${{ matrix.django-version }}.xml
+          test-report-${{ matrix.python-version }}-${{ matrix.django-version }}.html
+          coverage.xml
+          coverage_html/
+        retention-days: 30
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-django-messaging
+        fail_ci_if_error: false
+    
+    - name: Test summary
+      if: always()
+      run: |
+        echo "=== TEST SUMMARY ==="
+        echo "Python: ${{ matrix.python-version }}"
+        echo "Django: ${{ matrix.django-version }}"
+        echo "Job: ${{ github.job }}"
+        echo "Run ID: ${{ github.run_id }}"
+        
+        if [ -f "test-results-${{ matrix.python-version }}-${{ matrix.django-version }}.xml" ]; then
+          echo "Test results file exists"
+          # Extract test statistics
+          tests=$(grep -o 'tests="[0-9]*"' test-results-${{ matrix.python-version }}-${{ matrix.django-version }}.xml | head -1 | grep -o '[0-9]*')
+          failures=$(grep -o 'failures="[0-9]*"' test-results-${{ matrix.python-version }}-${{ matrix.django-version }}.xml | head -1 | grep -o '[0-9]*')
+          errors=$(grep -o 'errors="[0-9]*"' test-results-${{ matrix.python-version }}-${{ matrix.django-version }}.xml | head -1 | grep -o '[0-9]*')
+          
+          echo "Total tests: ${tests:-0}"
+          echo "Failures: ${failures:-0}"
+          echo "Errors: ${errors:-0}"
+        else
+          echo "No test results file found"
+        fi
+        
+        if [ -f "coverage.xml" ]; then
+          echo "Coverage file exists"
+          line_rate=$(grep -o 'line-rate="[0-9.]*"' coverage.xml | head -1 | grep -o '[0-9.]*')
+          branch_rate=$(grep -o 'branch-rate="[0-9.]*"' coverage.xml | head -1 | grep -o '[0-9.]*')
+          
+          echo "Line coverage: ${line_rate:-0}"
+          echo "Branch coverage: ${branch_rate:-0}"
+        fi
+  
+  lint:
+    name: Code Quality Checks
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        cache: 'pip'
+    
+    - name: Install linting tools
+      run: |
+        pip install flake8 black isort bandit safety mypy pylint
+    
+    - name: Run flake8
+      run: |
+        echo "=== Running flake8 ==="
+        flake8 messaging_app/ --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 messaging_app/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+    
+    - name: Run black check
+      run: |
+        echo "=== Running black check ==="
+        black --check messaging_app/
+    
+    - name: Run isort check
+      run: |
+        echo "=== Running isort check ==="
+        isort --check-only --diff messaging_app/
+    
+    - name: Run bandit security scan
+      run: |
+        echo "=== Running bandit security scan ==="
+        bandit -r messaging_app/ -f json -o bandit-report.json
+        bandit -r messaging_app/ -f txt -o bandit-report.txt
+    
+    - name: Run safety check
+      run: |
+        echo "=== Running safety check ==="
+        safety check --json > safety-report.json
+        safety check --full-report > safety-report.txt
+    
+    - name: Upload security reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-reports
+        path: |
+          bandit-report.json
+          bandit-report.txt
+          safety-report.json
+          safety-report.txt
+        retention-days: 30
+  
+  build:
+    name: Build and Package
+    runs-on: ubuntu-latest
+    needs: [test, lint]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        pip install -r messaging_app/requirements.txt
+    
+    - name: Create package archive
+      run: |
+        echo "Creating package archive..."
+        tar -czf messaging-app-package.tar.gz \
+          messaging_app/ \
+          requirements.txt \
+          README.md \
+          LICENSE
+        
+        # Show package info
+        ls -lh *.tar.gz
+        tar -tzf messaging-app-package.tar.gz | head -20
+    
+    - name: Upload package
+      uses: actions/upload-artifact@v4
+      with:
+        name: messaging-app-package
+        path: messaging-app-package.tar.gz
+        retention-days: 7
+  
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [test, lint, build]
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    
+    environment:
+      name: staging
+      url: https://staging.example.com
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Deploy to staging
+      run: |
+        echo "Deploying to staging environment..."
+        echo "Commit: ${{ github.sha }}"
+        echo "Branch: ${{ github.ref }}"
+        echo "Triggered by: ${{ github.actor }}"
+        # Add actual deployment commands here
+        # Example: scp, rsync, kubectl, docker push, etc.
+  
+  notify:
+    name: Send Notifications
+    runs-on: ubuntu-latest
+    needs: [test, lint, build]
+    if: always()
+    
+    steps:
+    - name: Send Slack notification
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        channel: '#github-actions'
+        username: 'GitHub Actions Bot'
+        icon_emoji: ':github:'
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+# Post-job cleanup and reporting
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
